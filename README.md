@@ -1,32 +1,40 @@
 # UltraScopeSimple
 
-为 Rigol DS1102E / DS1000D-E 系列示波器编写的 Python 采集与绘图工具集，作为 UltraScope 的轻量替代。三个脚本共享同一通信层，支持命令行导出与实时 GUI 显示。
+为 Rigol DS1102E / DS1000D-E 系列示波器编写的 Python 采集与绘图工具集，作为 UltraScope 的轻量替代。提供命令行导出与实时 GUI 显示两个入口，共用同一套仪器通信层。
 
 基于官方软件 **UltraSigma** 开发：本工具依赖 UltraSigma 安装的 USB 驱动程序（Rigol USBTMC）使示波器可被电脑识别为 VISA 仪器，开发过程中也参考了 UltraSigma 的 SCPI 命令交互方式。若示波器无法被识别，请先安装 UltraSigma（见 `官方软件/` 目录，未随仓库分发）。
 
-## 文件说明
+## 安装
 
-| 文件 | 作用 |
-|------|------|
-| `ds1102e.py` | 共享通信层，封装 DS1000E 旧版 SCPI 指令（波形码值转换、触发/垂直/水平/采集子系统、测量与 CSV 导出） |
-| `ds1102e_scope.py` | Tkinter 实时 GUI：波形显示 + 面板控制 + CSV/PNG 导出，支持深存储（RAW）采集 |
-| `ds1102e_dump.py` | 命令行采集导出工具，未传参数项保持示波器当前设置不变 |
-
-## 依赖
-
-- Python 3.8+
-- `pyvisa`（含后端，如 NI-VISA 或 pyvisa-py）
-- `numpy`
-- `matplotlib`（GUI 与 `--plot` 需要）
+需要 Python 3.8+，以及一个 VISA 后端（NI-VISA 或 pyvisa-py）。
 
 ```bash
-pip install pyvisa numpy matplotlib
+pip install -e ".[gui]"
 ```
+
+只用命令行导出 CSV 的话可以省掉绘图依赖：`pip install -e .`（`--plot` 与 GUI 需要 `[gui]` 提供的 matplotlib）。
+
+## 项目结构
+
+```
+src/ultrascope/
+  transport.py   VISA 会话（唯一直接依赖 pyvisa 的模块）
+  profile.py     机型参数：码值换算、分格数、量程档位
+  waveform.py    488.2 块解析、码值 → 电压、Waveform 值对象
+  scope.py       Scope —— SCPI 指令门面
+  export.py      CSV / PNG 落盘
+  cli.py         命令行工具
+  gui/           Tkinter 界面（worker / state / panels / plot / app）
+tests/           不接硬件的单元测试
+docs/            架构文档与官方 SCPI 手册
+```
+
+设计说明见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 
 ## GUI 使用
 
 ```bash
-python ds1102e_scope.py
+ultrascope-gui
 ```
 
 - **Connection**：刷新并选择 VISA 资源后 Connect（若无法识别，先用官方 UltraSigma 确认示波器可被电脑看到）
@@ -41,20 +49,22 @@ python ds1102e_scope.py
 
 ```bash
 # 导出当前屏幕显示的 600 点数据
-python ds1102e_dump.py
+ultrascope-dump
 
 # 1.5 V 下降沿单次触发，等待触发后导出
-python ds1102e_dump.py --single --trigger-level 1.5 --trigger-slope neg
+ultrascope-dump --single --trigger-level 1.5 --trigger-slope neg
 
 # CH1 单次深存储采集（1M 点）
-python ds1102e_dump.py --single --mode raw --memdepth long --channels 1
+ultrascope-dump --single --mode raw --memdepth long --channels 1
 
 # 16 次平均采集，同时输出 CSV 与 PNG
-python ds1102e_dump.py --acquire average --average 16 --plot
+ultrascope-dump --acquire average --average 16 --plot
 
 # 打印各通道 Vpp/Vrms/频率等测量值
-python ds1102e_dump.py --measure
+ultrascope-dump --measure
 ```
+
+未安装到 PATH 时可以用 `python -m ultrascope.cli` 与 `python -m ultrascope.gui` 代替。
 
 ### 常用选项
 
@@ -69,9 +79,30 @@ python ds1102e_dump.py --measure
 | `--single` | 单次触发并等待（`--trigger-timeout` 可设超时） |
 | `--timebase` | 设置 s/div |
 
+**未传的参数一律不下发**，示波器保持面板上的现状——可以安全地在手工调好的设置上直接跑。
+
+## 作为库使用
+
+```python
+from ultrascope import Scope, save_csv
+
+with Scope.connect() as scope:
+    wave = scope.capture(points="normal")
+    save_csv("out.csv", wave)
+```
+
 ## 数据格式
 
 CSV 首行 `Time(s),CH1(V),CH2(V)`，时间轴按屏幕 12 格、以时间偏移为中心构造。波形码值转换针对 DS1000E 旧固件（码值反相、以 130 为中心、每 25 码一格垂直分度）。
+
+## 测试
+
+```bash
+pip install -e ".[test]"
+pytest
+```
+
+测试用 `FakeTransport` 回放预置的 SCPI 应答，覆盖码值解码、时间轴、触发子系统路由、"未传参即不下发"契约与 CLI 参数解析，**不需要接示波器**。仪器层以上（真实 VISA 通信、GUI 交互）仍需接真机手动验证。
 
 ## 注意事项
 

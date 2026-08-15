@@ -1,28 +1,46 @@
 # AGENTS.md
 
-Python toolset for Rigol DS1102E / DS1000D-E oscilloscopes. Flat repo, three scripts, no tests/lint/CI. Runs against real hardware only.
+Python package for Rigol DS1102E / DS1000D-E oscilloscopes. CLI + Tkinter GUI over a shared instrument layer. Full design: `docs/ARCHITECTURE.md`.
 
 ## Commands
 
-- `python ds1102e_dump.py` — CLI capture/export (no GUI deps beyond numpy/pyvisa)
-- `python ds1102e_scope.py` — Tkinter GUI (needs matplotlib)
-- No test, lint, or build commands exist. Verification is manual against a connected scope.
+- `pip install -e ".[gui,test]"`
+- `pytest` — offline unit tests; `pytest tests/test_cli.py::test_channel_list_parsing` for one
+- `ultrascope-dump` (CLI) / `ultrascope-gui` (GUI); `python -m ultrascope.cli` / `python -m ultrascope.gui` also work
+- No lint or build step.
 
 ## Architecture
 
-- `ds1102e.py` — shared comm layer (`Scope` class). The other two files import it as `ds1102e`; run scripts from repo root.
-- `ds1102e_dump.py` — argparse CLI. Only passes options the user supplies; everything else stays as set on the instrument.
-- `ds1102e_scope.py` — Tk GUI. All instrument I/O runs on a single worker thread (queue + `Worker` class); the Tk thread only touches widgets. Never call `Scope` from the Tk thread or from two threads at once (`Scope` is not thread-safe).
+Layering is strictly one-directional: `cli.py`/`gui/` → `scope.py` → `waveform.py` + `profile.py` → `transport.py`.
+
+- `transport.py` — the only module importing pyvisa. `Transport` protocol + `PyVisaTransport` + `FakeTransport`. Timeouts change via the `timeout(ms)` context manager.
+- `profile.py` — `DeviceProfile` holds every per-model hardware fact. New model = new profile, not edits to the decode path.
+- `waveform.py` — pure `parse_block` / `decode` / `time_axis` + the `Waveform` value object.
+- `scope.py` — `Scope` SCPI facade; `Scope.connect()` convenience constructor; `snapshot()` → `ScopeSettings`.
+- `gui/` — `worker.py` / `state.py` / `panels.py` / `plot.py` / `app.py`.
+
+### Invariants
+
+- Setters take `None` for "leave alone" — a setting the user did not pass is never written. Asserted in `tests/test_scope.py`; keep it that way.
+- `Scope` is not thread-safe. All I/O on the `Worker` thread, widgets only on the Tk thread. The UI never holds a `Scope`; `Worker.connect()` creates it on its own thread.
+- Live mode is the worker's idle path: empty job queue + `streaming` set ⇒ capture a frame.
 
 ## Hardware/SCPI quirks (verified in code)
 
-- DS1000E speaks a legacy SCPI dialect: **no `:WAV:PREamble`**. Byte→volt conversion is the fixed scale: codes inverted (`255 - data`), centered on 130, 25 codes per vertical division.
-- Time axis in `capture()` is always 12 horizontal divisions centered on the time offset (`np.linspace(offset - 6*scale, offset + 6*scale, npts)`).
-- Deep-memory (`points="raw"`) reads only work while acquisition is STOPPED and need the long timeout (120 s); 1M-point reads are slow. `normal` is 600 displayed points.
-- The scope's USB driver comes from official UltraSigma software; VISA auto-detect fails without it.
-- `close()` sends `:KEY:FORC` to hand front-panel control back to the user.
+- Legacy SCPI dialect: **no `:WAV:PREamble`**. Fixed-scale conversion — codes inverted, centred on 130, 25 codes/division. Lives in `profile.py`; do not re-inline.
+- No per-sample timing: the time axis spans 12 horizontal divisions centred on the time offset.
+- Deep memory (`points="raw"`) requires STOP and the 120 s timeout; `normal` is 600 points.
+- `:TRIG:MODE?` returns a full word, subtrees are abbreviated — always via `trigger_subsys()`. ALTERNATION has no sweep.
+- Measurements return >1e37 when unavailable → mapped to `None`. Average count 2–256.
+- USB driver comes from UltraSigma; without it VISA enumerates nothing.
+- `close()` sends `:KEY:FORC` to return front-panel control.
+
+## Testing
+
+`FakeTransport` replays scripted SCPI answers and canned 488.2 blocks — decoding, trigger routing, the not-passed-not-written contract and CLI parsing all run offline. Real VISA traffic and GUI interaction still need a connected scope.
 
 ## Repo constraints
 
-- `.gitignore` excludes `官方软件/` (vendor .rar installers), `*.csv` (capture outputs), and `__pycache__/`. Keep those out of commits.
-- README.md is the usage doc; keep it in sync when CLI options change.
+- `.gitignore` excludes `官方软件/`, capture outputs (`*.csv`, `*.png`), build/test artifacts.
+- README.md and `docs/ARCHITECTURE.md` are Chinese; keep in sync with CLI/module changes. `CLAUDE.md` is the fuller version of this file — update together.
+- Commit messages are written in Chinese.
