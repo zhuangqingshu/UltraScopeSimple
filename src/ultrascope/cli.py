@@ -1,32 +1,38 @@
-"""
-Command-line waveform export for the Rigol DS1102E / DS1000D-E.
+"""Command-line waveform export for the Rigol DS1102E / DS1000D-E.
 
 Any setting you don't pass is left exactly as it is on the scope, so this is
-safe to run against a setup you dialed in by hand. See ds1102e.py for the
-communication layer, and ds1102e_scope.py for the GUI version.
+safe to run against a setup you dialed in by hand.
 
 Examples:
-    python ds1102e_dump.py
+    ultrascope-dump
         600-pt screen data from whatever is currently displayed.
 
-    python ds1102e_dump.py --single --trigger-level 1.5 --trigger-slope neg
+    ultrascope-dump --single --trigger-level 1.5 --trigger-slope neg
         Arm a one-shot falling-edge trigger at 1.5 V, wait for it, then dump.
 
-    python ds1102e_dump.py --single --mode raw --memdepth long --channels 1
+    ultrascope-dump --single --mode raw --memdepth long --channels 1
         One-shot deep-memory capture, 1M points on CH1.
 
-    python ds1102e_dump.py --acquire average --average 16 --plot
+    ultrascope-dump --acquire average --average 16 --plot
         Averaged acquisition, write CSV + PNG.
 """
 
+from __future__ import annotations
+
 import argparse
 import sys
+from typing import List, Optional, Sequence
 
-import ds1102e as rig
+from . import export
+from .scope import Scope, ScopeError
+from .units import eng
+
+SLOPE_ALIASES = {"pos": "positive", "neg": "negative"}
 
 
-def build_parser():
+def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
+        prog="ultrascope-dump",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description=__doc__,
     )
@@ -66,16 +72,31 @@ def build_parser():
     return ap
 
 
-def main():
-    args = build_parser().parse_args()
-    if args.trigger_slope in ("pos", "neg"):
-        args.trigger_slope = {"pos": "positive", "neg": "negative"}[args.trigger_slope]
+def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
+    args = build_parser().parse_args(argv)
+    args.trigger_slope = SLOPE_ALIASES.get(args.trigger_slope, args.trigger_slope)
+    args.channel_list = parse_channels(args.channels)
+    return args
 
-    channels = [int(c) for c in args.channels.split(",")]
+
+def parse_channels(text: str) -> List[int]:
+    return [int(c) for c in text.split(",")]
+
+
+def format_measurements(stats) -> str:
+    parts = []
+    for label, value in stats.items():
+        unit = "Hz" if label == "Freq" else ("s" if label == "Period" else "V")
+        parts.append(f"{label}={eng(value, unit) if value is not None else '--'}")
+    return "  ".join(parts)
+
+
+def main(argv: Optional[Sequence[str]] = None) -> None:
+    args = parse_args(argv)
 
     try:
-        scope = rig.Scope(args.resource)
-    except rig.ScopeError as exc:
+        scope = Scope.connect(args.resource)
+    except ScopeError as exc:
         sys.exit(str(exc))
 
     with scope:
@@ -105,35 +126,19 @@ def main():
             else:
                 print("Timed out; reading whatever is in memory.")
 
-        t, traces = scope.capture(channels, points=args.mode)
-        for ch, volts in sorted(traces.items()):
-            print(f"CH{ch}: {len(volts)} points")
+        wave = scope.capture(args.channel_list, points=args.mode)
+        for ch in wave.channel_ids:
+            print(f"CH{ch}: {len(wave.channels[ch])} points")
 
-        rig.save_csv(args.out, t, traces)
+        export.save_csv(args.out, wave)
         print("Wrote", args.out)
 
         if args.measure:
-            for ch in sorted(traces):
-                stats = scope.measure(ch)
-                parts = []
-                for label, value in stats.items():
-                    unit = "Hz" if label == "Freq" else ("s" if label == "Period" else "V")
-                    parts.append(f"{label}="
-                                 f"{rig.eng(value, unit) if value is not None else '--'}")
-                print(f"CH{ch}  " + "  ".join(parts))
+            for ch in wave.channel_ids:
+                print(f"CH{ch}  " + format_measurements(scope.measure(ch)))
 
         if args.plot:
-            import matplotlib.pyplot as plt
-
-            fig, ax = plt.subplots(figsize=(10, 5))
-            for ch in sorted(traces):
-                ax.plot(t, traces[ch], linewidth=0.8, label=f"CH{ch}")
-            ax.set_xlabel("Time (s)")
-            ax.set_ylabel("Voltage (V)")
-            ax.grid(True, alpha=0.3)
-            ax.legend()
-            png = args.out.rsplit(".", 1)[0] + ".png"
-            fig.savefig(png, dpi=150, bbox_inches="tight")
+            png = export.save_png(export.png_path_for(args.out), wave)
             print("Wrote", png)
 
 

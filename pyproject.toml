@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ultrascope-simple"
+version = "0.2.0"
+description = "Python capture and plotting tools for the Rigol DS1102E / DS1000D-E oscilloscope"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = ["pyvisa", "numpy"]
+
+[project.optional-dependencies]
+gui = ["matplotlib"]
+test = ["pytest"]
+
+[project.scripts]
+ultrascope-dump = "ultrascope.cli:main"
+ultrascope-gui = "ultrascope.gui:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

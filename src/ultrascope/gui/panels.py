@@ -1,0 +1,191 @@
+"""Control panel widgets.
+
+Each panel owns its widgets and Tk variables and reports changes through
+callbacks. No panel knows about Scope, the worker, or VISA.
+"""
+
+from __future__ import annotations
+
+import tkinter as tk
+from tkinter import ttk
+from typing import Callable, Optional, Sequence
+
+from . import state as st
+
+
+def labelled_combo(parent, label: str, values: Sequence[str], row: int,
+                   command: Callable[[], None], width: int = 13):
+    """A label + readonly combobox on one grid row. Returns its StringVar."""
+    ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=1)
+    var = tk.StringVar()
+    combo = ttk.Combobox(parent, textvariable=var, values=list(values),
+                         state="readonly", width=width)
+    combo.grid(row=row, column=1, columnspan=2, sticky="ew", pady=1)
+    combo.bind("<<ComboboxSelected>>", lambda _e: command())
+    return var
+
+
+class Panel:
+    """A titled group box that can be enabled or disabled as a unit."""
+
+    title = ""
+
+    def __init__(self, parent):
+        self.frame = ttk.LabelFrame(parent, text=self.title, padding=6)
+
+    def grid(self, row: int) -> None:
+        self.frame.grid(row=row, column=0, sticky="ew", pady=(0, 6))
+
+    def set_enabled(self, on: bool) -> None:
+        state = "normal" if on else "disabled"
+        for child in self.frame.winfo_children():
+            target = "readonly" if (on and isinstance(child, ttk.Combobox)) else state
+            try:
+                child.configure(state=target)
+            except tk.TclError:
+                pass
+
+
+class ConnectionPanel(Panel):
+    title = "Connection"
+
+    def __init__(self, parent, on_refresh: Callable[[], None],
+                 on_toggle: Callable[[], None]):
+        super().__init__(parent)
+        box = self.frame
+
+        self.resource = tk.StringVar()
+        self.resource_combo = ttk.Combobox(box, textvariable=self.resource, width=34)
+        self.resource_combo.grid(row=0, column=0, columnspan=2,
+                                 sticky="ew", pady=(0, 4))
+
+        ttk.Button(box, text="Refresh", command=on_refresh)\
+            .grid(row=1, column=0, sticky="ew", padx=(0, 3))
+        self.connect_button = ttk.Button(box, text="Connect", command=on_toggle)
+        self.connect_button.grid(row=1, column=1, sticky="ew")
+
+        self.idn = tk.StringVar(value="not connected")
+        ttk.Label(box, textvariable=self.idn, wraplength=250, foreground="#555")\
+            .grid(row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
+
+    def set_resources(self, resources: Sequence[str]) -> None:
+        self.resource_combo["values"] = list(resources)
+        if resources and not self.resource.get():
+            self.resource.set(resources[0])
+
+    def show_connected(self, idn: str) -> None:
+        self.idn.set(idn)
+        self.connect_button.configure(text="Disconnect")
+
+    def show_disconnected(self) -> None:
+        self.idn.set("not connected")
+        self.connect_button.configure(text="Connect")
+
+
+class AcquisitionPanel(Panel):
+    title = "Acquisition"
+
+    def __init__(self, parent, on_run, on_stop, on_auto, on_single, on_force,
+                 on_live, on_apply):
+        super().__init__(parent)
+        box = self.frame
+
+        for column, (label, command) in enumerate(
+                (("Run", on_run), ("Stop", on_stop), ("Auto", on_auto))):
+            ttk.Button(box, text=label, command=command, width=8)\
+                .grid(row=0, column=column, padx=1, sticky="ew")
+
+        ttk.Button(box, text="Single", command=on_single, width=8)\
+            .grid(row=1, column=0, padx=1, pady=(3, 0), sticky="ew")
+        ttk.Button(box, text="Force", command=on_force, width=8)\
+            .grid(row=1, column=1, padx=1, pady=(3, 0), sticky="ew")
+
+        self.live = tk.BooleanVar(value=True)
+        ttk.Checkbutton(box, text="Live", variable=self.live, command=on_live)\
+            .grid(row=1, column=2, padx=1, pady=(3, 0))
+
+        self.acq_type = labelled_combo(box, "Type", st.ACQ_TYPES, 2, on_apply)
+        self.average = labelled_combo(box, "Averages", st.AVERAGE_COUNTS, 3, on_apply)
+        self.memory = labelled_combo(box, "Memory", st.MEMORY_DEPTHS, 4, on_apply)
+
+
+class ChannelPanel(Panel):
+    def __init__(self, parent, ch: int, volt_table: st.OptionTable,
+                 on_apply: Callable[[int], None]):
+        self.ch = ch
+        self.title = f"Channel {ch}"
+        super().__init__(parent)
+        box = self.frame
+
+        self.on = tk.BooleanVar(value=True)
+        ttk.Checkbutton(box, text="Display", variable=self.on,
+                        command=lambda: on_apply(ch))\
+            .grid(row=0, column=0, columnspan=2, sticky="w")
+
+        self.volt_table = volt_table
+        self.scale = labelled_combo(box, "V/div", volt_table.labels, 1,
+                                    lambda: on_apply(ch))
+        self.coupling = labelled_combo(box, "Coupling", st.COUPLINGS, 2,
+                                       lambda: on_apply(ch))
+
+    def volt_scale(self) -> Optional[float]:
+        return self.volt_table.value_for(self.scale.get())
+
+
+class HorizontalPanel(Panel):
+    title = "Horizontal"
+
+    def __init__(self, parent, time_table: st.OptionTable, on_apply):
+        super().__init__(parent)
+        self.time_table = time_table
+        self.timebase = labelled_combo(self.frame, "s/div", time_table.labels,
+                                       0, on_apply)
+
+    def seconds_per_div(self) -> Optional[float]:
+        return self.time_table.value_for(self.timebase.get())
+
+
+class TriggerPanel(Panel):
+    title = "Trigger"
+
+    def __init__(self, parent, on_mode_change, on_apply):
+        super().__init__(parent)
+        box = self.frame
+
+        self.mode = labelled_combo(box, "Mode", st.TRIGGER_MODES, 0, on_mode_change)
+        self.source = labelled_combo(box, "Source", st.TRIGGER_SOURCES, 1, on_apply)
+        self.slope = labelled_combo(box, "Slope", st.TRIGGER_SLOPES, 2, on_apply)
+        self.sweep = labelled_combo(box, "Sweep", st.TRIGGER_SWEEPS, 3, on_apply)
+        self.coupling = labelled_combo(box, "Coupling", st.TRIGGER_COUPLINGS, 4, on_apply)
+
+        ttk.Label(box, text="Level (V)").grid(row=5, column=0, sticky="w", pady=(3, 0))
+        self.level = tk.StringVar(value="0")
+        entry = ttk.Entry(box, textvariable=self.level, width=12)
+        entry.grid(row=5, column=1, sticky="ew", pady=(3, 0))
+        entry.bind("<Return>", lambda _e: on_apply())
+        ttk.Button(box, text="Set level", command=on_apply)\
+            .grid(row=6, column=0, columnspan=2, sticky="ew", pady=(3, 0))
+
+        self.status = tk.StringVar(value="--")
+        ttk.Label(box, textvariable=self.status, foreground="#0a6")\
+            .grid(row=7, column=0, columnspan=2, sticky="w", pady=(4, 0))
+
+    def level_volts(self) -> Optional[float]:
+        try:
+            return float(self.level.get())
+        except ValueError:
+            return None
+
+
+class ExportPanel(Panel):
+    title = "Export"
+
+    def __init__(self, parent, on_csv, on_png, on_deep):
+        super().__init__(parent)
+        box = self.frame
+        ttk.Button(box, text="Save CSV", command=on_csv)\
+            .grid(row=0, column=0, sticky="ew", padx=(0, 3))
+        ttk.Button(box, text="Save PNG", command=on_png)\
+            .grid(row=0, column=1, sticky="ew")
+        ttk.Button(box, text="Deep memory capture (RAW)", command=on_deep)\
+            .grid(row=1, column=0, columnspan=2, sticky="ew", pady=(3, 0))

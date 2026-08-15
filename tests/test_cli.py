@@ -1,0 +1,56 @@
+import pytest
+
+from ultrascope.cli import (build_parser, format_measurements, parse_args,
+                            parse_channels)
+from ultrascope.export import png_path_for
+
+
+def test_defaults_match_the_documented_behaviour():
+    args = parse_args([])
+    assert args.mode == "normal"
+    assert args.out == "waveform.csv"
+    assert args.channel_list == [1, 2]
+    assert args.trigger_timeout == 30.0
+    # Nothing else is set, so nothing else gets written to the instrument.
+    assert args.acquire is None
+    assert args.timebase is None
+    assert args.trigger_level is None
+
+
+@pytest.mark.parametrize("given, expected", [
+    ("neg", "negative"),
+    ("pos", "positive"),
+    ("negative", "negative"),
+])
+def test_slope_shorthand_expands(given, expected):
+    assert parse_args(["--trigger-slope", given]).trigger_slope == expected
+
+
+def test_channel_list_parsing():
+    assert parse_channels("1") == [1]
+    assert parse_channels("1,2") == [1, 2]
+
+
+def test_deep_memory_invocation_from_the_readme():
+    args = parse_args(["--single", "--mode", "raw",
+                       "--memdepth", "long", "--channels", "1"])
+    assert args.single is True
+    assert args.mode == "raw"
+    assert args.memdepth == "long"
+    assert args.channel_list == [1]
+
+
+def test_unknown_choices_are_rejected():
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["--mode", "turbo"])
+
+
+def test_png_path_derives_from_the_csv_path():
+    assert png_path_for("waveform.csv") == "waveform.png"
+    assert png_path_for("out/run3.csv") == "out/run3.png"
+
+
+def test_measurement_line_marks_missing_values():
+    text = format_measurements({"Vpp": 1.5, "Freq": None})
+    assert "Vpp=1.5 V" in text
+    assert "Freq=--" in text
