@@ -41,7 +41,7 @@ ultrascope-gui
 - **Acquisition**：Run / Stop / Auto / Single / Force，Live 实时刷新，平均与深存储模式
 - **Channel 1/2**：显示开关、V/div、耦合（DC/AC/GND）
 - **Horizontal / Trigger**：时基与触发（模式、源、斜率、扫描、耦合、电平）
-- **Export**：保存 CSV / PNG，Deep memory capture 读取完整 1M 点存储
+- **Export**：保存 CSV / PNG，Deep memory capture 读取深存储（见下方「已知限制」）
 
 所有仪器 I/O 由单一工作线程串行执行，Tk 主线程只操作控件。
 
@@ -106,6 +106,16 @@ pytest
 
 ## 注意事项
 
-- 深存储（RAW）采集必须处于 STOP 状态，且耗时较长（`TIMEOUT_RAW_MS` 为 120 s）
+- 深存储（RAW）采集必须处于 STOP 状态
 - 程序退出时会发送 `:KEY:FORC` 将面板控制权交还示波器
 - 平均次数范围 2–256
+
+## 已知限制
+
+**深存储采集拿不到完整 1M 点。** 实测（DS1102E 固件 00.04.02.01.00）：RAW 模式下
+仪器的数据块头无论存储深度都声明 1 048 576 字节，但实际只发出约 12 K 就断流。
+`--mode raw --memdepth long` 会在等待剩余数据时超时；即使读到数据，也是一段被截断的
+块。这不是本工具的回归——重构前的代码行为完全相同，只是此前没有人试过 1M 采样。
+
+在修复之前，深存储采集的结果**不可信**，请以 `--mode normal` 的 600 点数据为准。
+详见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 第 9 节缺陷 6、7。
