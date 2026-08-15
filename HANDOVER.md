@@ -174,15 +174,13 @@ source/slope/level，PULSE 的脉宽条件、SLOPE 的时间条件等无处可�
 | 释抑 6 个取值 + 范围校验 | 全部生效 |
 | 触发电平 ±6 格夹紧、50% 无信号报错 | 正确 |
 | 采集/CSV/PNG 导出、测量哨兵值、`:KEY:FORC` | 正确 |
+| **拖动平移方向** | 波形跟随光标，符号正确 |
 
 **尚未验证**，接手后应优先补：
 
-1. **拖动平移的方向** —— 波形应当跟随光标移动。若表现为"越拖越远"，说明
-   `PlotCanvas._pan_finish()` 里 offset 的符号反了。**这项只做过模拟事件的冒烟测试
-   （数值方向正确），没有真人在真机上拖过。**
-2. GUI 其余交互：连接/断开、live 刷新、Run/Stop/Auto/Single/Force、触发电平拖拽与滚轮
+1. GUI 其余交互：连接/断开、live 刷新、Run/Stop/Auto/Single/Force、触发电平拖拽与滚轮
    微调、Save/Load setup、关窗是否交还面板
-3. CLI 的 `--single`（等待触发）与 `--acquire average`
+2. CLI 的 `--single`（等待触发）与 `--acquire average`
 
 **已验证为损坏**：深存储 1M 点读取。见下。
 
