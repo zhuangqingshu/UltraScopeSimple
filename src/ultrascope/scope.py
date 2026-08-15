@@ -9,12 +9,13 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Callable, Dict, Iterable, Optional
+from typing import Callable, Dict, Iterable, List, Optional
 
 from . import waveform as wf
 from .profile import DEFAULT_PROFILE, DeviceProfile
 from .transport import (TIMEOUT_NORM_MS, TIMEOUT_RAW_MS, PyVisaTransport,
                         Transport)
+from .units import eng, scpi_number
 
 SOURCE_MAP = {"1": "CHAN1", "2": "CHAN2", "ch1": "CHAN1", "ch2": "CHAN2",
               "chan1": "CHAN1", "chan2": "CHAN2", "ext": "EXT", "acline": "ACLINE"}
@@ -29,11 +30,18 @@ class ChannelSettings:
     on: bool
     volt_scale: float
     coupling: str
+    probe: Optional[float] = None
+    volt_offset: Optional[float] = None
 
 
 @dataclass
 class ScopeSettings:
-    """A snapshot of the front panel, used to make the GUI mirror the instrument."""
+    """A snapshot of the front panel.
+
+    Serves both jobs: the GUI mirrors it onto its panels, and ``to_dict`` /
+    ``from_dict`` are the on-disk setup-file format shared by the GUI's
+    Save/Load setup buttons and the CLI's --save-setup / --load-setup.
+    """
 
     timebase: float
     acquire_type: str
@@ -41,11 +49,65 @@ class ScopeSettings:
     memory_depth: str
     trigger_mode: str
     channels: Dict[int, ChannelSettings]
+    time_offset: float = 0.0
+    idn: str = ""
     # Some trigger modes do not expose all of these.
     trigger_source: Optional[str] = None
     trigger_slope: Optional[str] = None
     trigger_sweep: Optional[str] = None
     trigger_level: Optional[float] = None
+    trigger_holdoff: Optional[float] = None
+
+    # The dict form is a published file format: keep the key names and the
+    # string-keyed "channels" map stable so old setup files keep loading.
+    _TRIGGER_KEYS = (("source", "trigger_source"), ("slope", "trigger_slope"),
+                     ("sweep", "trigger_sweep"), ("level", "trigger_level"),
+                     ("holdoff", "trigger_holdoff"))
+
+    def to_dict(self) -> dict:
+        trigger = {"mode": self.trigger_mode}
+        for key, attr in self._TRIGGER_KEYS:
+            value = getattr(self, attr)
+            if value is not None:
+                trigger[key] = value
+        return {
+            "idn": self.idn,
+            "timebase": self.timebase,
+            "time_offset": self.time_offset,
+            "acq_type": self.acquire_type,
+            "acq_average": self.average,
+            "acq_memdepth": self.memory_depth,
+            "trigger": trigger,
+            "channels": {
+                str(ch): {"on": c.on, "probe": c.probe, "scale": c.volt_scale,
+                          "offset": c.volt_offset, "coupling": c.coupling}
+                for ch, c in sorted(self.channels.items())
+            },
+        }
+
+    @classmethod
+    def from_dict(cls, state: dict) -> "ScopeSettings":
+        trigger = state.get("trigger") or {}
+        settings = cls(
+            timebase=state.get("timebase", 0.0),
+            acquire_type=state.get("acq_type", ""),
+            average=state.get("acq_average", 0),
+            memory_depth=state.get("acq_memdepth", ""),
+            trigger_mode=trigger.get("mode", ""),
+            time_offset=state.get("time_offset", 0.0),
+            idn=state.get("idn", ""),
+            channels={
+                int(ch): ChannelSettings(
+                    on=info.get("on", False), volt_scale=info.get("scale", 1.0),
+                    coupling=info.get("coupling", ""), probe=info.get("probe"),
+                    volt_offset=info.get("offset"))
+                for ch, info in (state.get("channels") or {}).items()
+            },
+        )
+        for key, attr in cls._TRIGGER_KEYS:
+            if key in trigger:
+                setattr(settings, attr, trigger[key])
+        return settings
 
 
 class Scope:
@@ -148,9 +210,10 @@ class Scope:
         if coupling is not None:
             self.write(f":TRIG:{sub}:COUP {coupling.upper()}")
         if level is not None:
-            self.write(f":TRIG:{sub}:LEV {level}")
+            self.write(f":TRIG:{sub}:LEV {scpi_number(level)}")
         if holdoff is not None:
-            self.write(f":TRIG:HOLD {holdoff}")
+            # Route through the setter so the range check applies here too.
+            self.set_holdoff(holdoff)
         if sweep is not None:
             if mode == "ALTERNATION":
                 raise ScopeError("Alternation mode has no sweep setting.")
@@ -171,6 +234,54 @@ class Scope:
     def trigger_sweep(self) -> str:
         _, sub = self.trigger_subsys()
         return self.query(f":TRIG:{sub}:SWE?")
+
+    def trigger_channel(self) -> Optional[int]:
+        """The channel number the trigger looks at, or None for EXT/ACLINE."""
+        src = self.trigger_source().upper()
+        if "2" in src:
+            return 2
+        if "1" in src:
+            return 1
+        return None
+
+    def trigger_level_50(self) -> float:
+        """Put the trigger level at the midpoint of the source channel's signal.
+
+        This is what pressing the front panel's LEVEL knob does.
+        """
+        ch = self.trigger_channel()
+        if ch is None:
+            raise ScopeError("50% needs CHAN1 or CHAN2 as the trigger source.")
+        vmax = self.qfloat(f":MEAS:VMAX? CHAN{ch}")
+        vmin = self.qfloat(f":MEAS:VMIN? CHAN{ch}")
+        if abs(vmax) > 1e37 or abs(vmin) > 1e37:
+            raise ScopeError(f"No measurable signal on CH{ch}.")
+        level = (vmax + vmin) / 2.0
+        self.set_trigger(level=level)
+        return level
+
+    def clamp_trigger_level(self, level: float,
+                            ch: Optional[int] = None) -> float:
+        """Clamp to the division window the scope accepts.
+
+        Out-of-range levels are rejected silently, which just looks like
+        "setting the level did nothing".
+        """
+        ch = ch if ch is not None else self.trigger_channel()
+        if ch is None:
+            return level
+        limit = self.profile.trigger_level_divs * self.volt_scale(ch)
+        return max(-limit, min(limit, level))
+
+    def holdoff(self) -> float:
+        return self.qfloat(":TRIG:HOLD?")
+
+    def set_holdoff(self, seconds: float) -> None:
+        low, high = self.profile.holdoff_min, self.profile.holdoff_max
+        if not low <= seconds <= high:
+            raise ScopeError(f"Holdoff must be between {eng(low, 's')} "
+                             f"and {eng(high, 's')}.")
+        self.write(f":TRIG:HOLD {scpi_number(seconds)}")
 
     def single(self, timeout_s: float = 30.0, poll: float = 0.2,
                should_abort: Optional[Callable[[], bool]] = None) -> bool:
@@ -228,10 +339,10 @@ class Scope:
         return self.qfloat(":TIM:OFFS?")
 
     def set_timebase(self, sec_per_div: float) -> None:
-        self.write(f":TIM:SCAL {sec_per_div}")
+        self.write(f":TIM:SCAL {scpi_number(sec_per_div)}")
 
     def set_time_offset(self, seconds: float) -> None:
-        self.write(f":TIM:OFFS {seconds}")
+        self.write(f":TIM:OFFS {scpi_number(seconds)}")
 
     def channel_on(self, ch: int) -> bool:
         return self.query(f":CHAN{ch}:DISP?") in ("1", "ON")
@@ -243,13 +354,13 @@ class Scope:
         return self.qfloat(f":CHAN{ch}:SCAL?")
 
     def set_volt_scale(self, ch: int, volts_per_div: float) -> None:
-        self.write(f":CHAN{ch}:SCAL {volts_per_div}")
+        self.write(f":CHAN{ch}:SCAL {scpi_number(volts_per_div)}")
 
     def volt_offset(self, ch: int) -> float:
         return self.qfloat(f":CHAN{ch}:OFFS?")
 
     def set_volt_offset(self, ch: int, volts: float) -> None:
-        self.write(f":CHAN{ch}:OFFS {volts}")
+        self.write(f":CHAN{ch}:OFFS {scpi_number(volts)}")
 
     def set_coupling(self, ch: int, coupling: str) -> None:
         self.write(f":CHAN{ch}:COUP {coupling.upper()}")
@@ -257,33 +368,108 @@ class Scope:
     def coupling(self, ch: int) -> str:
         return self.query(f":CHAN{ch}:COUP?")
 
+    def probe(self, ch: int) -> float:
+        return self.qfloat(f":CHAN{ch}:PROB?")
+
+    def set_probe(self, ch: int, ratio: float) -> None:
+        """Set the probe attenuation.
+
+        The scope rescales volts/div and the offset to match, so this must be
+        written *before* any scale or offset you also intend to set.
+        """
+        ratio = float(ratio)
+        if ratio not in self.profile.probe_ratios:
+            raise ScopeError(
+                f"Probe ratio must be one of {list(self.profile.probe_ratios)}")
+        self.write(f":CHAN{ch}:PROB {ratio:g}")
+
     # --- state snapshot ----------------------------------------------------
 
     def snapshot(self, channels: Iterable[int] = (1, 2)) -> ScopeSettings:
         """Read back the current front-panel state.
 
-        The GUI uses this to mirror whatever the user already dialled in, both
-        on connect and after an :AUTO.
+        Used both to mirror the instrument onto the GUI panel and to write
+        setup files.
         """
         settings = ScopeSettings(
+            idn=self.idn,
             timebase=self.timebase(),
-            acquire_type=self.acquire_type(),
+            time_offset=self.time_offset(),
+            acquire_type=self.acquire_type().upper(),
             average=int(float(self.average_count())),
-            memory_depth=self.memory_depth(),
+            memory_depth=self.memory_depth().upper(),
             trigger_mode=self.trigger_mode(),
             channels={ch: ChannelSettings(on=self.channel_on(ch),
                                           volt_scale=self.volt_scale(ch),
-                                          coupling=self.coupling(ch))
+                                          coupling=self.coupling(ch).upper(),
+                                          probe=self.probe(ch),
+                                          volt_offset=self.volt_offset(ch))
                       for ch in channels},
         )
-        try:
-            settings.trigger_source = self.trigger_source()
-            settings.trigger_slope = self.trigger_slope()
-            settings.trigger_sweep = self.trigger_sweep()
-            settings.trigger_level = self.trigger_level()
-        except Exception:
-            pass  # some trigger modes lack part of this; leave those blank
+        # Not every trigger mode exposes all of these, so gather them one by
+        # one rather than letting the first gap abandon the rest.
+        for attr, getter in (("trigger_source", self.trigger_source),
+                             ("trigger_slope", self.trigger_slope),
+                             ("trigger_sweep", self.trigger_sweep),
+                             ("trigger_level", self.trigger_level),
+                             ("trigger_holdoff", self.holdoff)):
+            try:
+                value = getter()
+            except Exception:
+                continue
+            setattr(settings, attr,
+                    value.upper() if isinstance(value, str) else value)
         return settings
+
+    def restore(self, state) -> List[str]:
+        """Apply a snapshot. Missing values are simply left alone.
+
+        Returns human-readable warnings for anything that failed; one
+        unsupported setting must not abort the whole restore.
+        """
+        if not isinstance(state, ScopeSettings):
+            state = ScopeSettings.from_dict(state)
+
+        warnings: List[str] = []
+
+        def attempt(label, action):
+            try:
+                action()
+            except Exception as exc:
+                warnings.append(f"{label}: {exc}")
+
+        for ch, info in sorted(state.channels.items()):
+            # Probe first: it rescales volts/div and offset underneath us.
+            if info.probe is not None:
+                attempt(f"CH{ch} probe",
+                        lambda c=ch, v=info.probe: self.set_probe(c, v))
+            if info.coupling:
+                attempt(f"CH{ch} coupling",
+                        lambda c=ch, v=info.coupling: self.set_coupling(c, v))
+            attempt(f"CH{ch} scale",
+                    lambda c=ch, v=info.volt_scale: self.set_volt_scale(c, v))
+            if info.volt_offset is not None:
+                attempt(f"CH{ch} offset",
+                        lambda c=ch, v=info.volt_offset: self.set_volt_offset(c, v))
+            attempt(f"CH{ch} display",
+                    lambda c=ch, v=info.on: self.set_channel_on(c, v))
+
+        attempt("timebase", lambda: self.set_timebase(state.timebase))
+        attempt("time offset", lambda: self.set_time_offset(state.time_offset))
+        attempt("acquire", lambda: self.set_acquire(
+            state.acquire_type or None,
+            state.average if state.acquire_type == "AVERAGE" else None,
+            state.memory_depth or None))
+
+        if state.trigger_mode:
+            attempt("trigger mode",
+                    lambda: self.set_trigger_mode(state.trigger_mode))
+        attempt("trigger", lambda: self.set_trigger(
+            source=state.trigger_source, slope=state.trigger_slope,
+            level=state.trigger_level, sweep=state.trigger_sweep,
+            holdoff=state.trigger_holdoff))
+
+        return warnings
 
     # --- measurements ------------------------------------------------------
 

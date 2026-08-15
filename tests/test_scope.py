@@ -2,7 +2,7 @@
 
 import pytest
 
-from ultrascope.scope import Scope, ScopeError
+from ultrascope.scope import Scope, ScopeError, ScopeSettings
 from ultrascope.transport import TIMEOUT_RAW_MS, FakeTransport
 
 from test_waveform import block
@@ -178,12 +178,16 @@ SNAPSHOT_RESPONSES = dict(CAPTURE_RESPONSES, **{
     ":ACQ:MEMD?": "NORMAL",
     ":TRIG:MODE?": "EDGE",
     ":CHAN1:COUP?": "DC",
+    ":CHAN1:PROB?": "10",
     ":CHAN2:SCAL?": "0.5",
+    ":CHAN2:OFFS?": "0.25",
     ":CHAN2:COUP?": "AC",
+    ":CHAN2:PROB?": "1",
     ":TRIG:EDGE:SOUR?": "CHAN1",
     ":TRIG:EDGE:SLOP?": "POSITIVE",
     ":TRIG:EDGE:SWE?": "AUTO",
     ":TRIG:EDGE:LEV?": "1.2",
+    ":TRIG:HOLD?": "5e-7",
 })
 
 
@@ -194,9 +198,12 @@ def test_snapshot_collects_the_front_panel_state():
     assert settings.average == 16
     assert settings.trigger_mode == "EDGE"
     assert settings.trigger_level == 1.2
+    assert settings.trigger_holdoff == 5e-7
     assert settings.channels[1].on is True
+    assert settings.channels[1].probe == 10.0
     assert settings.channels[2].on is False
     assert settings.channels[2].coupling == "AC"
+    assert settings.channels[2].volt_offset == 0.25
 
 
 def test_snapshot_tolerates_a_trigger_mode_without_level_or_slope():
@@ -206,3 +213,141 @@ def test_snapshot_tolerates_a_trigger_mode_without_level_or_slope():
     settings = scope.snapshot((1, 2))
     assert settings.trigger_level is None
     assert settings.timebase == 0.001
+
+
+def test_snapshot_survives_the_setup_file_round_trip():
+    scope, _ = make_scope(SNAPSHOT_RESPONSES)
+    settings = scope.snapshot((1, 2))
+    assert ScopeSettings.from_dict(settings.to_dict()) == settings
+
+
+def test_setup_file_keys_stay_stable():
+    # This dict is a published file format; renaming a key breaks saved setups.
+    scope, _ = make_scope(SNAPSHOT_RESPONSES)
+    state = scope.snapshot((1, 2)).to_dict()
+    assert set(state) == {"idn", "timebase", "time_offset", "acq_type",
+                          "acq_average", "acq_memdepth", "trigger", "channels"}
+    assert set(state["channels"]) == {"1", "2"}
+    assert set(state["channels"]["1"]) == {"on", "probe", "scale", "offset",
+                                           "coupling"}
+
+
+# --- probe attenuation -----------------------------------------------------
+
+def test_probe_ratio_must_be_a_supported_step():
+    scope, _ = make_scope()
+    with pytest.raises(ScopeError):
+        scope.set_probe(1, 3.0)
+
+
+@pytest.mark.parametrize("ratio, written", [
+    (1.0, ":CHAN1:PROB 1"), (10.0, ":CHAN1:PROB 10"),
+    (1000.0, ":CHAN1:PROB 1000"),
+])
+def test_probe_ratio_is_written_without_a_trailing_zero(ratio, written):
+    scope, transport = make_scope()
+    scope.set_probe(1, ratio)
+    assert written in transport.written
+
+
+def test_restore_writes_probe_before_scale_and_offset():
+    # Changing the probe ratio rescales volts/div and offset underneath, so
+    # the order here is load-bearing, not cosmetic.
+    scope, transport = make_scope({":TRIG:MODE?": "EDGE"})
+    scope.restore({"channels": {"1": {"probe": 10.0, "scale": 1.0,
+                                      "offset": 0.5, "coupling": "DC",
+                                      "on": True}}})
+    order = [c.split()[0] for c in transport.written
+             if c.startswith((":CHAN1:PROB", ":CHAN1:SCAL", ":CHAN1:OFFS"))]
+    assert order.index(":CHAN1:PROB") < order.index(":CHAN1:SCAL")
+    assert order.index(":CHAN1:PROB") < order.index(":CHAN1:OFFS")
+
+
+# --- holdoff ---------------------------------------------------------------
+
+@pytest.mark.parametrize("seconds", [1e-9, 100e-9, 2.0, 60.0])
+def test_holdoff_outside_the_supported_range_is_rejected(seconds):
+    scope, _ = make_scope()
+    with pytest.raises(ScopeError):
+        scope.set_holdoff(seconds)
+
+
+@pytest.mark.parametrize("seconds, written", [
+    (500e-9, ":TRIG:HOLD 0.0000005"), (1e-3, ":TRIG:HOLD 0.001"),
+    (1.5, ":TRIG:HOLD 1.5"),
+])
+def test_holdoff_inside_the_range_is_written(seconds, written):
+    # Plain decimals only: the scope ignores ":TRIG:HOLD 5e-07" outright.
+    scope, transport = make_scope()
+    scope.set_holdoff(seconds)
+    assert sent(transport, ":TRIG:HOLD") == [written]
+
+
+def test_set_trigger_range_checks_holdoff_too():
+    scope, _ = make_scope({":TRIG:MODE?": "EDGE"})
+    with pytest.raises(ScopeError):
+        scope.set_trigger(holdoff=60.0)
+
+
+# --- trigger level helpers -------------------------------------------------
+
+@pytest.mark.parametrize("source, expected", [
+    ("CHAN1", 1), ("CH1", 1), ("CHAN2", 2), ("CH2", 2),
+    ("EXT", None), ("ACLINE", None),
+])
+def test_trigger_channel_reads_through_the_reported_source(source, expected):
+    scope, _ = make_scope({":TRIG:MODE?": "EDGE", ":TRIG:EDGE:SOUR?": source})
+    assert scope.trigger_channel() == expected
+
+
+def test_level_is_clamped_to_six_divisions():
+    # 1 V/div * 6 divisions = +/-6 V; the scope ignores anything beyond that.
+    scope, _ = make_scope({":TRIG:MODE?": "EDGE", ":TRIG:EDGE:SOUR?": "CHAN1",
+                           ":CHAN1:SCAL?": "1"})
+    assert scope.clamp_trigger_level(99.0) == 6.0
+    assert scope.clamp_trigger_level(-99.0) == -6.0
+    assert scope.clamp_trigger_level(2.5) == 2.5
+
+
+def test_level_is_not_clamped_for_external_trigger():
+    scope, _ = make_scope({":TRIG:MODE?": "EDGE", ":TRIG:EDGE:SOUR?": "EXT"})
+    assert scope.clamp_trigger_level(99.0) == 99.0
+
+
+def test_50_percent_takes_the_midpoint_of_the_source_channel():
+    scope, transport = make_scope({
+        ":TRIG:MODE?": "EDGE", ":TRIG:EDGE:SOUR?": "CHAN1",
+        ":MEAS:VMAX? CHAN1": "3.0", ":MEAS:VMIN? CHAN1": "-1.0"})
+    assert scope.trigger_level_50() == 1.0
+    assert ":TRIG:EDGE:LEV 1" in transport.written
+
+
+def test_50_percent_reports_when_there_is_no_measurable_signal():
+    scope, _ = make_scope({
+        ":TRIG:MODE?": "EDGE", ":TRIG:EDGE:SOUR?": "CHAN1",
+        ":MEAS:VMAX? CHAN1": "99e36", ":MEAS:VMIN? CHAN1": "99e36"})
+    with pytest.raises(ScopeError, match="No measurable signal"):
+        scope.trigger_level_50()
+
+
+def test_50_percent_needs_a_channel_source():
+    scope, _ = make_scope({":TRIG:MODE?": "EDGE", ":TRIG:EDGE:SOUR?": "EXT"})
+    with pytest.raises(ScopeError):
+        scope.trigger_level_50()
+
+
+# --- restore ---------------------------------------------------------------
+
+def test_restore_collects_warnings_instead_of_aborting():
+    # An out-of-range holdoff must not stop the timebase from being applied.
+    scope, transport = make_scope({":TRIG:MODE?": "EDGE"})
+    warnings = scope.restore({"timebase": 0.001,
+                              "trigger": {"mode": "EDGE", "holdoff": 60.0}})
+    assert any("trigger" in w for w in warnings)
+    assert ":TIM:SCAL 0.001" in transport.written
+
+
+def test_restore_of_an_empty_setup_touches_almost_nothing():
+    scope, transport = make_scope({":TRIG:MODE?": "EDGE"})
+    scope.restore({})
+    assert sent(transport, ":CHAN") == []

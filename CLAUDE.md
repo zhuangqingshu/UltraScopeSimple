@@ -32,6 +32,7 @@ cli.py / gui/   →  scope.py  →  waveform.py + profile.py  →  transport.py
 
 ### Invariants that must not be broken
 
+- **Numeric SCPI parameters must be plain decimals.** The scope accepts a command like `:TIM:SCAL 5e-5` and then silently ignores it, so exponent notation makes a setting appear not to work. Every float written to the instrument goes through `units.scpi_number()`; 14 of the 32 timebase steps were broken this way before it existed.
 - **Setters take `None` for "leave alone".** A setting the user did not pass is never written, so the CLI is safe to run against a hand-dialled setup. `tests/test_scope.py` asserts this; keep it asserted.
 - **`Scope` is not thread-safe.** All instrument I/O runs on the `Worker` thread; the Tk thread only touches widgets. The UI never constructs or holds a `Scope` — `Worker.connect()` does, on its own thread.
 - Live mode *is* the worker's idle path: job queue empty + `streaming` set ⇒ capture a frame.
@@ -43,7 +44,7 @@ cli.py / gui/   →  scope.py  →  waveform.py + profile.py  →  transport.py
 - Deep-memory (`points="raw"`) reads only work while acquisition is STOPPED and need `TIMEOUT_RAW_MS` (120 s); 1M-point reads are slow. `normal` is 600 displayed points.
 - `:TRIG:MODE?` returns a full word but the command subtrees are abbreviated — go through `Scope.trigger_subsys()`, never interpolate the mode. ALTERNATION has no sweep setting.
 - Measurements return a >1e37 sentinel when unavailable; `measure()` maps those to `None`.
-- Average count is limited to 2–256.
+- Average count is limited to 2–256; holdoff to 500 ns – 1.5 s; the trigger level to ±6 divisions. All three are ignored silently out of range, so they are range-checked in `profile.py`/`scope.py`.
 - The USB driver comes from official UltraSigma software; VISA enumeration finds nothing without it.
 - `close()` sends `:KEY:FORC` to hand front-panel control back to the user.
 

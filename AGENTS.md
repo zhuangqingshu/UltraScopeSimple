@@ -21,6 +21,7 @@ Layering is strictly one-directional: `cli.py`/`gui/` → `scope.py` → `wavefo
 
 ### Invariants
 
+- Numeric SCPI parameters must be plain decimals. The scope accepts a command like `:TIM:SCAL 5e-5` and then silently ignores it, so exponent notation makes a setting appear not to work. Every float written to the instrument goes through `units.scpi_number()`; 14 of the 32 timebase steps were broken this way before it existed.
 - Setters take `None` for "leave alone" — a setting the user did not pass is never written. Asserted in `tests/test_scope.py`; keep it that way.
 - `Scope` is not thread-safe. All I/O on the `Worker` thread, widgets only on the Tk thread. The UI never holds a `Scope`; `Worker.connect()` creates it on its own thread.
 - Live mode is the worker's idle path: empty job queue + `streaming` set ⇒ capture a frame.

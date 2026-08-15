@@ -32,6 +32,8 @@ DS1000E_TIME_SCALES = (
     1.0, 2.0, 5.0, 10.0, 20.0, 50.0,
 )
 
+DS1000E_PROBE_RATIOS = (1.0, 5.0, 10.0, 50.0, 100.0, 500.0, 1000.0)
+
 
 @dataclass(frozen=True)
 class DeviceProfile:
@@ -57,13 +59,20 @@ class DeviceProfile:
     # --- front-panel ranges ---
     volt_scales: Tuple[float, ...] = DS1000E_VOLT_SCALES
     time_scales: Tuple[float, ...] = DS1000E_TIME_SCALES
+    probe_ratios: Tuple[float, ...] = DS1000E_PROBE_RATIOS
 
     trigger_subsystems: Mapping[str, str] = field(
         default_factory=lambda: dict(DS1000E_TRIGGER_SUBSYS))
 
     # --- limits ---
+    # The scope ignores out-of-range values silently rather than reporting an
+    # error, which just looks like "the setting did nothing". Range-check here.
     average_min: int = 2
     average_max: int = 256
+    holdoff_min: float = 500e-9
+    holdoff_max: float = 1.5
+    # A trigger level further than this many divisions from centre is rejected.
+    trigger_level_divs: float = 6.0
 
     def is_scope_resource(self, resource: str) -> bool:
         """Whether a VISA resource string plausibly belongs to this family."""

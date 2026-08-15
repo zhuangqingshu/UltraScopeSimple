@@ -50,6 +50,26 @@ def test_png_path_derives_from_the_csv_path():
     assert png_path_for("out/run3.csv") == "out/run3.png"
 
 
+def test_vertical_and_horizontal_options_default_to_unset():
+    # Unset means "never written", which is what makes the tool safe to run
+    # against a hand-dialled setup.
+    args = parse_args([])
+    assert args.probe is None
+    assert args.offset is None
+    assert args.position is None
+    assert args.load_setup is None
+    assert args.save_setup is None
+
+
+def test_setup_and_probe_options_parse():
+    args = parse_args(["--probe", "10", "--offset", "0.5",
+                       "--position", "1e-4", "--load-setup", "s.json"])
+    assert args.probe == 10.0
+    assert args.offset == 0.5
+    assert args.position == 1e-4
+    assert args.load_setup == "s.json"
+
+
 def test_measurement_line_marks_missing_values():
     text = format_measurements({"Vpp": 1.5, "Freq": None})
     assert "Vpp=1.5 V" in text

@@ -37,6 +37,14 @@ class OptionTable:
         return eng(nearest, self.unit)
 
 
+def probe_labels(profile=None) -> tuple:
+    """Probe ratios as the front panel writes them: 1X, 10X, ..."""
+    from ..profile import DEFAULT_PROFILE
+
+    ratios = (profile or DEFAULT_PROFILE).probe_ratios
+    return tuple(f"{int(r)}X" for r in ratios)
+
+
 ACQ_TYPES = ("NORMAL", "AVERAGE", "PEAKDETECT")
 AVERAGE_COUNTS = ("2", "4", "8", "16", "32", "64", "128", "256")
 MEMORY_DEPTHS = ("NORMAL", "LONG")

@@ -25,6 +25,25 @@ def labelled_combo(parent, label: str, values: Sequence[str], row: int,
     return var
 
 
+def labelled_entry(parent, label: str, row: int, command: Callable[[], None],
+                   width: int = 13):
+    """A numeric entry that applies on Enter or when focus leaves."""
+    ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=1)
+    var = tk.StringVar()
+    widget = ttk.Entry(parent, textvariable=var, width=width)
+    widget.grid(row=row, column=1, columnspan=2, sticky="ew", pady=1)
+    widget.bind("<Return>", lambda _e: command())
+    widget.bind("<FocusOut>", lambda _e: command())
+    return var
+
+
+def parse_float(text) -> Optional[float]:
+    try:
+        return float(text)
+    except (TypeError, ValueError):
+        return None
+
+
 class Panel:
     """A titled group box that can be enabled or disabled as a unit."""
 
@@ -111,25 +130,37 @@ class AcquisitionPanel(Panel):
 
 class ChannelPanel(Panel):
     def __init__(self, parent, ch: int, volt_table: st.OptionTable,
-                 on_apply: Callable[[int], None]):
+                 active_var: tk.IntVar, on_apply: Callable[[int], None]):
         self.ch = ch
         self.title = f"Channel {ch}"
         super().__init__(parent)
         box = self.frame
+        apply = lambda: on_apply(ch)  # noqa: E731
 
         self.on = tk.BooleanVar(value=True)
-        ttk.Checkbutton(box, text="Display", variable=self.on,
-                        command=lambda: on_apply(ch))\
-            .grid(row=0, column=0, columnspan=2, sticky="w")
+        ttk.Checkbutton(box, text="Display", variable=self.on, command=apply)\
+            .grid(row=0, column=0, sticky="w")
+        # The active channel is the one vertical dragging and the wheel move.
+        ttk.Radiobutton(box, text="Active", value=ch, variable=active_var)\
+            .grid(row=0, column=1, sticky="w")
 
+        # Probe sits above V/div because getting it wrong scales every voltage
+        # reading by 10x, and that is hard to spot from the trace alone.
+        self.probe = labelled_combo(box, "Probe", st.probe_labels(), 1, apply)
         self.volt_table = volt_table
-        self.scale = labelled_combo(box, "V/div", volt_table.labels, 1,
-                                    lambda: on_apply(ch))
-        self.coupling = labelled_combo(box, "Coupling", st.COUPLINGS, 2,
-                                       lambda: on_apply(ch))
+        self.scale = labelled_combo(box, "V/div", volt_table.labels, 2, apply)
+        self.coupling = labelled_combo(box, "Coupling", st.COUPLINGS, 3, apply)
+        self.offset = labelled_entry(box, "Offset (V)", 4, apply)
 
     def volt_scale(self) -> Optional[float]:
         return self.volt_table.value_for(self.scale.get())
+
+    def probe_ratio(self) -> Optional[float]:
+        text = self.probe.get()
+        return float(text.rstrip("Xx")) if text else None
+
+    def volt_offset(self) -> Optional[float]:
+        return parse_float(self.offset.get())
 
 
 class HorizontalPanel(Panel):
@@ -140,15 +171,19 @@ class HorizontalPanel(Panel):
         self.time_table = time_table
         self.timebase = labelled_combo(self.frame, "s/div", time_table.labels,
                                        0, on_apply)
+        self.position = labelled_entry(self.frame, "Position (s)", 1, on_apply)
 
     def seconds_per_div(self) -> Optional[float]:
         return self.time_table.value_for(self.timebase.get())
+
+    def time_offset(self) -> Optional[float]:
+        return parse_float(self.position.get())
 
 
 class TriggerPanel(Panel):
     title = "Trigger"
 
-    def __init__(self, parent, on_mode_change, on_apply):
+    def __init__(self, parent, on_mode_change, on_apply, on_level_50):
         super().__init__(parent)
         box = self.frame
 
@@ -163,18 +198,33 @@ class TriggerPanel(Panel):
         entry = ttk.Entry(box, textvariable=self.level, width=12)
         entry.grid(row=5, column=1, sticky="ew", pady=(3, 0))
         entry.bind("<Return>", lambda _e: on_apply())
-        ttk.Button(box, text="Set level", command=on_apply)\
-            .grid(row=6, column=0, columnspan=2, sticky="ew", pady=(3, 0))
+        ttk.Button(box, text="Set", command=on_apply)\
+            .grid(row=6, column=0, sticky="ew", pady=(3, 0), padx=(0, 3))
+        ttk.Button(box, text="50%", command=on_level_50)\
+            .grid(row=6, column=1, sticky="ew", pady=(3, 0))
+        ttk.Label(box, text="drag the red line, or scroll over the plot",
+                  foreground="#777", font=("", 8))\
+            .grid(row=7, column=0, columnspan=2, sticky="w")
+        self.holdoff = labelled_entry(box, "Holdoff (s)", 8, on_apply)
 
         self.status = tk.StringVar(value="--")
         ttk.Label(box, textvariable=self.status, foreground="#0a6")\
-            .grid(row=7, column=0, columnspan=2, sticky="w", pady=(4, 0))
+            .grid(row=9, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
     def level_volts(self) -> Optional[float]:
-        try:
-            return float(self.level.get())
-        except ValueError:
-            return None
+        return parse_float(self.level.get())
+
+    def holdoff_seconds(self) -> Optional[float]:
+        return parse_float(self.holdoff.get())
+
+    def channel(self) -> Optional[int]:
+        """Which channel's volts/div governs the level, or None for EXT/ACLINE."""
+        src = self.source.get().upper()
+        if "2" in src:
+            return 2
+        if "1" in src:
+            return 1
+        return None
 
 
 class ExportPanel(Panel):
@@ -189,3 +239,15 @@ class ExportPanel(Panel):
             .grid(row=0, column=1, sticky="ew")
         ttk.Button(box, text="Deep memory capture (RAW)", command=on_deep)\
             .grid(row=1, column=0, columnspan=2, sticky="ew", pady=(3, 0))
+
+
+class SetupPanel(Panel):
+    title = "Setup"
+
+    def __init__(self, parent, on_save, on_load):
+        super().__init__(parent)
+        box = self.frame
+        ttk.Button(box, text="Save setup", command=on_save)\
+            .grid(row=0, column=0, sticky="ew", padx=(0, 3))
+        ttk.Button(box, text="Load setup", command=on_load)\
+            .grid(row=0, column=1, sticky="ew")

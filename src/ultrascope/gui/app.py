@@ -15,8 +15,10 @@ from .. import export
 from ..discovery import list_scopes
 from ..profile import DEFAULT_PROFILE
 from . import state as st
+from ..setup_file import load_setup, save_setup
+from ..units import eng
 from .panels import (AcquisitionPanel, ChannelPanel, ConnectionPanel,
-                     ExportPanel, HorizontalPanel, TriggerPanel)
+                     ExportPanel, HorizontalPanel, SetupPanel, TriggerPanel)
 from .plot import PlotCanvas
 from .worker import Worker
 
@@ -42,6 +44,8 @@ class App(ttk.Frame):
 
         self.connected = False
         self.last_capture = None
+        self.idn = ""
+        self.active_channel = tk.IntVar(value=1)
 
         self.volt_table = st.OptionTable(DEFAULT_PROFILE.volt_scales, "V")
         self.time_table = st.OptionTable(DEFAULT_PROFILE.time_scales, "s")
@@ -65,18 +69,20 @@ class App(ttk.Frame):
             on_single=self._single, on_force=self._force,
             on_live=self._toggle_live, on_apply=self._apply_acquire)
         self.channels = {ch: ChannelPanel(panel, ch, self.volt_table,
+                                          self.active_channel,
                                           self._apply_channel)
                          for ch in CHANNELS}
         self.horizontal = HorizontalPanel(panel, self.time_table,
                                           self._apply_timebase)
         self.trigger = TriggerPanel(panel, self._apply_trigger_mode,
-                                    self._apply_trigger)
+                                    self._apply_trigger, self._level_50)
         self.export_panel = ExportPanel(panel, self._save_csv, self._save_png,
                                         self._deep_capture)
+        self.setup_panel = SetupPanel(panel, self._save_setup, self._load_setup)
 
         self.panels = [self.connection, self.acquisition,
                        *self.channels.values(), self.horizontal,
-                       self.trigger, self.export_panel]
+                       self.trigger, self.export_panel, self.setup_panel]
         for row, item in enumerate(self.panels):
             item.grid(row)
 
@@ -86,6 +92,14 @@ class App(ttk.Frame):
 
         self.plot = PlotCanvas(self)
         self.plot.grid(row=0, column=1, sticky="nsew")
+        # The canvas handles the gestures; committing them to the instrument
+        # stays here, because only the App may talk to the worker.
+        self.plot.on_level_commit = self._push_level
+        self.plot.on_pan_commit = self._commit_pan
+        self.plot.on_status = self.status.set
+        self.plot.active_channel = self.active_channel.get
+        self.plot.trigger_channel = self.trigger.channel
+        self.plot.enabled = lambda: self.connected
 
     def _set_enabled(self, on: bool) -> None:
         """Everything but the connection box follows the connection state."""
@@ -146,11 +160,13 @@ class App(ttk.Frame):
 
     def _set_disconnected(self) -> None:
         self.connected = False
+        self.idn = ""
         self.connection.show_disconnected()
         self._set_enabled(False)
 
     def _on_connect(self, idn) -> None:
         self.connected = True
+        self.idn = idn
         self.connection.show_connected(idn)
         self._set_enabled(True)
         self.status.set("Connected.")
@@ -162,6 +178,8 @@ class App(ttk.Frame):
     def _on_settings(self, settings) -> None:
         """Mirror the instrument's own state onto the panel."""
         self.horizontal.timebase.set(self.time_table.label_for(settings.timebase))
+        self.horizontal.position.set(f"{settings.time_offset:.6g}")
+        self.plot.time_offset = settings.time_offset
         self.acquisition.acq_type.set(settings.acquire_type.upper())
         self.acquisition.average.set(str(settings.average))
         self.acquisition.memory.set(settings.memory_depth.upper())
@@ -172,12 +190,23 @@ class App(ttk.Frame):
             panel.on.set(info.on)
             panel.scale.set(self.volt_table.label_for(info.volt_scale))
             panel.coupling.set(info.coupling.upper())
+            if info.probe is not None:
+                panel.probe.set(f"{int(info.probe)}X")
+            if info.volt_offset is not None:
+                panel.offset.set(f"{info.volt_offset:.6g}")
+                self.plot.volt_offsets[ch] = info.volt_offset
+            # The plot needs volts/div to clamp the level and size the wheel step.
+            self.plot.volt_scales[ch] = info.volt_scale
 
-        if settings.trigger_source is not None:
-            self.trigger.source.set(settings.trigger_source.upper())
-            self.trigger.slope.set(settings.trigger_slope.upper())
-            self.trigger.sweep.set(settings.trigger_sweep.upper())
-            self.trigger.level.set(f"{settings.trigger_level:.4g}")
+        for var, value in ((self.trigger.source, settings.trigger_source),
+                           (self.trigger.slope, settings.trigger_slope),
+                           (self.trigger.sweep, settings.trigger_sweep)):
+            if value is not None:
+                var.set(value.upper())
+        if settings.trigger_holdoff is not None:
+            self.trigger.holdoff.set(f"{settings.trigger_holdoff:.6g}")
+        if settings.trigger_level is not None:
+            self._show_level(settings.trigger_level)
 
         if self.acquisition.live.get():
             self.worker.streaming.set()
@@ -229,21 +258,45 @@ class App(ttk.Frame):
         on = panel.on.get()
         scale = panel.volt_scale()
         coupling = panel.coupling.get()
+        probe = panel.probe_ratio()
+        offset = panel.volt_offset()
+
+        # Keep the plot's mirror current so the level clamp and the wheel step
+        # stay right without querying the instrument mid-gesture.
+        if scale is not None:
+            self.plot.volt_scales[ch] = scale
+        if offset is not None:
+            self.plot.volt_offsets[ch] = offset
 
         def job(scope):
             scope.set_channel_on(ch, on)
-            if on:
-                if scale is not None:
-                    scope.set_volt_scale(ch, scale)
-                if coupling:
-                    scope.set_coupling(ch, coupling)
+            if not on:
+                return
+            # Probe first: changing it rescales volts/div and the offset.
+            if probe is not None:
+                scope.set_probe(ch, probe)
+            if coupling:
+                scope.set_coupling(ch, coupling)
+            if scale is not None:
+                scope.set_volt_scale(ch, scale)
+            if offset is not None:
+                scope.set_volt_offset(ch, offset)
 
         self._do(job)
 
     def _apply_timebase(self) -> None:
-        value = self.horizontal.seconds_per_div()
-        if value is not None:
-            self._do(lambda s: s.set_timebase(value))
+        scale = self.horizontal.seconds_per_div()
+        position = self.horizontal.time_offset()
+        if position is not None:
+            self.plot.time_offset = position
+
+        def job(scope):
+            if scale is not None:
+                scope.set_timebase(scale)
+            if position is not None:
+                scope.set_time_offset(position)
+
+        self._do(job)
 
     def _apply_acquire(self) -> None:
         atype = self.acquisition.acq_type.get() or None
@@ -264,13 +317,48 @@ class App(ttk.Frame):
 
     def _apply_trigger(self) -> None:
         level = self.trigger.level_volts()
+        if level is not None:
+            level = self.plot.clamp_level(level)
+            self._show_level(level)
         source = self.trigger.source.get() or None
         slope = self.trigger.slope.get() or None
         sweep = self.trigger.sweep.get() or None
         coupling = self.trigger.coupling.get() or None
+        holdoff = self.trigger.holdoff_seconds()
 
         self._do(lambda s: s.set_trigger(source=source, slope=slope, level=level,
-                                         coupling=coupling, sweep=sweep))
+                                         coupling=coupling, sweep=sweep,
+                                         holdoff=holdoff))
+
+    # ---------------------------------------------------------- trigger level
+
+    def _show_level(self, level: float) -> None:
+        """Update the entry box and the marker without touching the instrument."""
+        self.trigger.level.set(f"{level:.4g}")
+        self.plot.show_level(level)
+
+    def _push_level(self, level: float) -> None:
+        """Commit a level the canvas produced (drag, double-click, wheel)."""
+        self.trigger.level.set(f"{level:.4g}")
+        self._do(lambda s: s.set_trigger(level=level))
+
+    def _level_50(self) -> None:
+        self._do(lambda s: s.trigger_level_50(), "level50")
+
+    def _on_level50(self, level) -> None:
+        self._show_level(level)
+        self.status.set(f"Level set to 50% ({eng(level, 'V')}).")
+
+    def _commit_pan(self, time_offset: float, ch: int, volt_offset: float) -> None:
+        """Write the result of a drag-to-pan gesture, once, on release."""
+        self.horizontal.position.set(f"{time_offset:.6g}")
+        self.channels[ch].offset.set(f"{volt_offset:.6g}")
+
+        def job(scope):
+            scope.set_time_offset(time_offset)
+            scope.set_volt_offset(ch, volt_offset)
+
+        self._do(job)
 
     # --------------------------------------------------------------- display
 
@@ -311,6 +399,53 @@ class App(ttk.Frame):
         if path:
             self.plot.savefig(path)
             self.status.set(f"Wrote {path}")
+
+    # ----------------------------------------------------------- setup files
+
+    def _save_setup(self) -> None:
+        path = filedialog.asksaveasfilename(defaultextension=".json",
+                                            filetypes=[("Setup", "*.json")],
+                                            initialfile="setup.json")
+        if path:
+            self._do(lambda s: (path, s.snapshot(CHANNELS)), "savesetup")
+
+    def _on_savesetup(self, payload) -> None:
+        path, settings = payload
+        save_setup(path, settings)
+        self.status.set(f"Wrote {path}")
+
+    def _load_setup(self) -> None:
+        path = filedialog.askopenfilename(filetypes=[("Setup", "*.json"),
+                                                     ("All files", "*.*")])
+        if not path:
+            return
+        try:
+            settings = load_setup(path)
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("Cannot read setup", str(exc))
+            return
+
+        if settings.idn and self.idn and settings.idn != self.idn:
+            if not messagebox.askyesno(
+                    "Different instrument",
+                    f"This setup was saved from:\n{settings.idn}\n\n"
+                    f"Currently connected:\n{self.idn}\n\nApply anyway?"):
+                return
+
+        def job(scope):
+            return scope.restore(settings), scope.snapshot(CHANNELS)
+
+        self._do(job, "loadsetup")
+
+    def _on_loadsetup(self, payload) -> None:
+        warnings, settings = payload
+        self._on_settings(settings)
+        if warnings:
+            self.status.set(f"Restored with {len(warnings)} problem(s).")
+            messagebox.showwarning("Setup restored with warnings",
+                                   "\n".join(warnings))
+        else:
+            self.status.set("Setup restored.")
 
     def _deep_capture(self) -> None:
         """Stop and pull the full acquisition memory instead of the screen points."""

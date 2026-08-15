@@ -39,8 +39,11 @@ ultrascope-gui
 
 - **Connection**：刷新并选择 VISA 资源后 Connect（若无法识别，先用官方 UltraSigma 确认示波器可被电脑看到）
 - **Acquisition**：Run / Stop / Auto / Single / Force，Live 实时刷新，平均与深存储模式
-- **Channel 1/2**：显示开关、V/div、耦合（DC/AC/GND）
-- **Horizontal / Trigger**：时基与触发（模式、源、斜率、扫描、耦合、电平）
+- **Channel 1/2**：显示开关、Active 单选、探头衰减比、V/div、耦合、垂直位移
+- **Horizontal / Trigger**：时基与水平位移；触发模式、源、斜率、扫描、耦合、电平、释抑
+- **波形图交互**：拖动红色虚线调触发电平（双击定位，滚轮按 1/5 分度微调）；
+  在图上拖动可平移时基与垂直位移（作用于 Active 选中的通道）
+- **Setup**：保存/加载完整配置（JSON），与 CLI 的 `--save-setup` / `--load-setup` 通用
 - **Export**：保存 CSV / PNG，Deep memory capture 读取深存储（见下方「已知限制」）
 
 所有仪器 I/O 由单一工作线程串行执行，Tk 主线程只操作控件。
@@ -62,6 +65,10 @@ ultrascope-dump --acquire average --average 16 --plot
 
 # 打印各通道 Vpp/Vrms/频率等测量值
 ultrascope-dump --measure
+
+# 保存当前配置，之后随时还原
+ultrascope-dump --save-setup bench.json
+ultrascope-dump --load-setup bench.json
 ```
 
 未安装到 PATH 时可以用 `python -m ultrascope.cli` 与 `python -m ultrascope.gui` 代替。
@@ -78,6 +85,11 @@ ultrascope-dump --measure
 | `--measure` | 打印 Vpp/Vmax/Vmin/Vavg/Vrms/频率/周期 |
 | `--single` | 单次触发并等待（`--trigger-timeout` 可设超时） |
 | `--timebase` | 设置 s/div |
+| `--probe` | 探头衰减比，1/5/10/50/100/500/1000 |
+| `--offset` | 垂直位移（V），作用于 `--channels` |
+| `--position` | 水平位移（s） |
+| `--save-setup` | 把当前完整状态写成 JSON 后退出 |
+| `--load-setup` | 先套用 JSON 配置，再应用其他选项 |
 
 **未传的参数一律不下发**，示波器保持面板上的现状——可以安全地在手工调好的设置上直接跑。
 
@@ -111,6 +123,11 @@ pytest
 - 平均次数范围 2–256
 
 ## 已知限制
+
+**数值参数一律以普通小数下发。** 示波器会接受 `:TIM:SCAL 5e-5` 这类指数写法然后
+静默忽略——设置看起来"没反应"。因此所有浮点写入都经 `units.scpi_number()` 格式化。
+修复前，2 ns/div 到 50 µs/div 共 14 个时基档位设不进去且不报错。
+
 
 **深存储采集拿不到完整 1M 点。** 实测（DS1102E 固件 00.04.02.01.00）：RAW 模式下
 仪器的数据块头无论存储深度都声明 1 048 576 字节，但实际只发出约 12 K 就断流。

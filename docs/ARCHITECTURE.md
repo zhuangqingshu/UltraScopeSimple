@@ -88,22 +88,24 @@ docs/
 src/
   ultrascope/
     __init__.py           公开 API 再导出 + __version__
-    units.py              eng()
+    units.py              eng()、scpi_number()
     transport.py          Transport 协议、PyVisaTransport、FakeTransport
     discovery.py          list_scopes()
     profile.py            DeviceProfile，DS1000E 的具体参数
     waveform.py           Waveform 值对象、488.2 块解析、码值解码
     scope.py              Scope 门面 + ScopeSettings 快照
     export.py             save_csv() / save_png()
+    setup_file.py         配置文件读写（GUI 与 CLI 共用的 JSON 格式）
     cli.py                argparse 命令行工具
     gui/
       __init__.py         main()
       worker.py           Worker 线程 + 任务/结果协议
       state.py            GUI 侧的设置快照与组合框选项表
       panels.py           各控制面板控件类
-      plot.py             matplotlib 画布控件
+      plot.py             matplotlib 画布 + 触发电平线 + 拖动/滚轮手势
       app.py              窗口装配与事件分发
 tests/
+  test_setup_file.py
   test_units.py
   test_waveform.py        用 FakeTransport 验证解码与时间轴
   test_scope.py           触发子系统路由、"未提供即不下发"语义
@@ -283,6 +285,26 @@ ultrascope-gui
    附带观察：验证期间示波器扫描方式为 SINGLE，`:RUN` 之后状态仍为 STOP —— 无触发
    事件就不会重新采集。排查深存储问题时要先确认扫描方式，否则会误判为"采集没生效"。
 
+8. **数值参数必须写成普通小数，指数记法会被静默忽略。**（已修复）
+
+   移植 `ed2f21d` 时发现：`:TIM:SCAL 5e-5`、`:TRIG:HOLD 5e-07` 这类命令在链路层
+   被正常接受，示波器却什么也不做——设置看起来"没反应"。同一个值写成
+   `0.00005` / `0.0000005` 就正常生效。
+
+   影响范围远超释抑：Python 对 1e-5 以下的浮点数默认就渲染成指数形式，而时基档位
+   表里 **2 ns/div 到 50 µs/div 共 14 档全部落在这个区间**。实测修复前这 14 档
+   无论从 GUI 下拉框、`--timebase` 还是配置恢复去设，**一律静默失效**；
+   100 µs/div 以上的 18 档因为渲染成小数所以一直是好的。此缺陷自初版即存在。
+
+   修复：`units.scpi_number()` 用 `Decimal` 强制输出普通小数（2 ns/div 发出去是
+   `0.000000002`），`scope.py` 里所有浮点写入（触发电平、释抑、时基、水平位移、
+   V/div、垂直位移）一律经它格式化。真机复测：32 档时基全部生效，释抑 6 个取值
+   全部生效。
+
+   排查时的教训：中途一度以为问题只是"指数补零"，因为 `5e-7` 看起来能用——实际
+   那是无效对照，写入前该值已经就是 `5e-7`，没有发生状态改变。**验证"写入是否
+   生效"必须先把参数停到另一个值上**，否则读回来的一致毫无意义。
+
 ---
 
 ## 10. 实施进度
@@ -310,6 +332,15 @@ ultrascope-gui
   - [ ] `--single` 等待触发（未验）
   - [ ] `--acquire average` 平均采集（未验）
 - [ ] **接真机验证 GUI**：连接/断开、live 刷新、Run/Stop/Auto/Single/Force、通道与时基与触发改设、深存储采集、CSV/PNG 导出、关窗时面板控制权交还
-- [ ] 处理第 9 节缺陷，建议顺序：先 6（静默截断，属正确性问题），再 1/3/4/5，最后 7（需分块读取，工作量最大）
+- [x] **移植 master 的 `ed2f21d` 功能批**（探头衰减比、垂直/水平位移、释抑、
+      触发电平拖拽与 50%、配置存取），并统一了两边各自加的 `snapshot()`
+- [x] 真机验证配置存取：改动后恢复，13 个字段逐项精确还原；探头衰减比先于
+      V/div 写入的顺序约束通过（否则 scale 会被连带重算）
+- [x] 真机验证释抑范围校验、`clamp_trigger_level`、50% 的无信号报错路径
+- [x] 修复并真机复测缺陷 8（指数记法静默失效）：32 档时基全部生效
+- [ ] **接真机验证 GUI 交互**：连接/断开、live 刷新、Run/Stop/Auto/Single/Force、
+      触发电平拖拽与滚轮微调、波形图拖动平移、Save/Load setup、关窗交还面板
+- [ ] 处理第 9 节剩余缺陷，建议顺序：先 6（静默截断，属正确性问题），再 1/3/4/5，
+      最后 7（深存储，需另找途径）
 
 GUI 部分必须接真实示波器手动点击——自动化测试只覆盖到仪器层以下，冒烟测试只证明控件能建起来、显示路径不报错，**不能证明 SCPI 交互正确**。
