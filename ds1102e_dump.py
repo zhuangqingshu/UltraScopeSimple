@@ -20,6 +20,7 @@ Examples:
 """
 
 import argparse
+import json
 import sys
 
 import ds1102e as rig
@@ -63,6 +64,21 @@ def build_parser():
     acq.add_argument("--memdepth", choices=["normal", "long"],
                      help="'long' is required for a full 1M-point --mode raw")
     acq.add_argument("--timebase", type=float, metavar="SEC_PER_DIV")
+
+    vert = ap.add_argument_group("vertical / horizontal")
+    vert.add_argument("--probe", type=float, metavar="RATIO",
+                      help="probe attenuation applied to --channels, e.g. 1 or 10")
+    vert.add_argument("--offset", type=float, metavar="VOLTS",
+                      help="vertical offset applied to --channels")
+    vert.add_argument("--position", type=float, metavar="SECONDS",
+                      help="horizontal position (:TIM:OFFS)")
+
+    setup = ap.add_argument_group("setup files")
+    setup.add_argument("--load-setup", metavar="PATH",
+                       help="apply a JSON setup saved by the GUI or --save-setup, "
+                            "before any other option is applied")
+    setup.add_argument("--save-setup", metavar="PATH",
+                       help="write the scope's full state to JSON and exit")
     return ap
 
 
@@ -81,9 +97,31 @@ def main():
     with scope:
         print("Connected:", scope.idn)
 
+        if args.save_setup:
+            with open(args.save_setup, "w", encoding="utf-8") as fh:
+                json.dump(scope.snapshot(), fh, indent=2, ensure_ascii=False)
+            print("Wrote", args.save_setup)
+            return
+
+        # A setup file is the baseline; explicit options override it below.
+        if args.load_setup:
+            with open(args.load_setup, encoding="utf-8") as fh:
+                for warning in scope.restore(json.load(fh)):
+                    print("setup:", warning)
+            print("Applied", args.load_setup)
+
+        for ch in channels:
+            # Probe first: it rescales volts/div and the offset underneath.
+            if args.probe is not None:
+                scope.set_probe(ch, args.probe)
+            if args.offset is not None:
+                scope.set_volt_offset(ch, args.offset)
+
         scope.set_acquire(args.acquire, args.average, args.memdepth)
         if args.timebase is not None:
             scope.set_timebase(args.timebase)
+        if args.position is not None:
+            scope.set_time_offset(args.position)
 
         if args.trigger_mode:
             scope.set_trigger_mode(args.trigger_mode)
