@@ -43,5 +43,5 @@ Layering is strictly one-directional: `cli.py`/`gui/` → `scope.py` → `wavefo
 ## Repo constraints
 
 - `.gitignore` excludes `官方软件/`, capture outputs (`*.csv`, `*.png`), build/test artifacts.
-- README.md and `docs/ARCHITECTURE.md` are Chinese; keep in sync with CLI/module changes. `CLAUDE.md` is the fuller version of this file — update together.
+- Docs are Chinese: `README.md` usage, `docs/ARCHITECTURE.md` design, `HANDOVER.md` rationale + verification status, `ROADMAP.md` what's next. Keep in sync with CLI/module changes. `CLAUDE.md` is the fuller version of this file — update together.
 - Commit messages are written in Chinese.

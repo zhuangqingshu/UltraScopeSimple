@@ -29,7 +29,8 @@ tests/           不接硬件的单元测试
 docs/            架构文档与官方 SCPI 手册
 ```
 
-设计说明见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+设计说明见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)，
+接手须知与验证状态见 [HANDOVER.md](HANDOVER.md)，功能规划见 [ROADMAP.md](ROADMAP.md)。
 
 ## GUI 使用
 

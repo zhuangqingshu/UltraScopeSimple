@@ -55,5 +55,5 @@ cli.py / gui/   →  scope.py  →  waveform.py + profile.py  →  transport.py
 ## Repo constraints
 
 - `.gitignore` excludes `官方软件/` (vendor .rar installers), capture outputs (`*.csv`, `*.png`), and build/test artifacts. Keep those out of commits.
-- README.md (Chinese) is the usage doc and `docs/ARCHITECTURE.md` (Chinese) the design doc; keep both in sync when CLI options or module boundaries change. `AGENTS.md` is a condensed version of this file — update together.
+- Docs are Chinese: `README.md` usage, `docs/ARCHITECTURE.md` design, `HANDOVER.md` why-it-is-this-way plus verification status, `ROADMAP.md` what's next. Keep them in sync when CLI options or module boundaries change. `AGENTS.md` is a condensed version of this file — update together.
 - Commit messages in this repo are written in Chinese.
