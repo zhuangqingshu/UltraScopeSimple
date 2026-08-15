@@ -11,6 +11,7 @@ only ever touches widgets. Requests are funnelled through a queue so the
 USBTMC link is never used from two places at once.
 """
 
+import json
 import queue
 import threading
 import tkinter as tk
@@ -157,19 +158,29 @@ class App(ttk.Frame):
                                    4, self._apply_acquire)
 
         # --- vertical ---
+        self.active_ch = tk.IntVar(value=1)
         self.ch_on, self.ch_scale, self.ch_coup = {}, {}, {}
+        self.ch_probe, self.ch_offset = {}, {}
         for ch in (1, 2):
             box = ttk.LabelFrame(panel, text=f"Channel {ch}", padding=6)
             box.grid(row=row, column=0, sticky="ew", pady=(0, 6)); row += 1
             self.ch_on[ch] = tk.BooleanVar(value=True)
             ttk.Checkbutton(box, text="Display", variable=self.ch_on[ch],
                             command=lambda c=ch: self._apply_channel(c))\
-                .grid(row=0, column=0, columnspan=2, sticky="w")
+                .grid(row=0, column=0, sticky="w")
+            # The active channel is the one vertical dragging and the wheel move.
+            ttk.Radiobutton(box, text="Active", value=ch, variable=self.active_ch)\
+                .grid(row=0, column=1, sticky="w")
+            self.ch_probe[ch] = self._combo(
+                box, "Probe", [f"{int(r)}X" for r in rig.PROBE_RATIOS],
+                1, lambda c=ch: self._apply_channel(c))
             self.ch_scale[ch] = self._combo(
                 box, "V/div", [rig.eng(v, "V") for v in rig.VOLT_SCALES],
-                1, lambda c=ch: self._apply_channel(c))
+                2, lambda c=ch: self._apply_channel(c))
             self.ch_coup[ch] = self._combo(box, "Coupling", ["DC", "AC", "GND"],
-                                           2, lambda c=ch: self._apply_channel(c))
+                                           3, lambda c=ch: self._apply_channel(c))
+            self.ch_offset[ch] = self._entry(box, "Offset (V)", 4,
+                                             lambda c=ch: self._apply_channel(c))
 
         # --- horizontal ---
         box = ttk.LabelFrame(panel, text="Horizontal", padding=6)
@@ -177,6 +188,7 @@ class App(ttk.Frame):
         self.timebase = self._combo(box, "s/div",
                                     [rig.eng(v, "s") for v in rig.TIME_SCALES],
                                     0, self._apply_timebase)
+        self.time_offset = self._entry(box, "Position (s)", 1, self._apply_timebase)
 
         # --- trigger ---
         box = ttk.LabelFrame(panel, text="Trigger", padding=6)
@@ -199,12 +211,18 @@ class App(ttk.Frame):
         entry = ttk.Entry(box, textvariable=self.trig_level, width=12)
         entry.grid(row=5, column=1, sticky="ew", pady=(3, 0))
         entry.bind("<Return>", lambda _e: self._apply_trigger())
-        ttk.Button(box, text="Set level", command=self._apply_trigger)\
-            .grid(row=6, column=0, columnspan=2, sticky="ew", pady=(3, 0))
+        ttk.Button(box, text="Set", command=self._apply_trigger)\
+            .grid(row=6, column=0, sticky="ew", pady=(3, 0), padx=(0, 3))
+        ttk.Button(box, text="50%", command=self._level_50)\
+            .grid(row=6, column=1, sticky="ew", pady=(3, 0))
+        ttk.Label(box, text="drag the red line, or scroll over the plot",
+                  foreground="#777", font=("", 8))\
+            .grid(row=7, column=0, columnspan=2, sticky="w")
+        self.trig_holdoff = self._entry(box, "Holdoff (s)", 8, self._apply_trigger)
 
         self.trig_status = tk.StringVar(value="--")
         ttk.Label(box, textvariable=self.trig_status, foreground="#0a6")\
-            .grid(row=7, column=0, columnspan=2, sticky="w", pady=(4, 0))
+            .grid(row=9, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
         # --- export ---
         box = ttk.LabelFrame(panel, text="Export", padding=6)
@@ -215,6 +233,13 @@ class App(ttk.Frame):
             .grid(row=0, column=1, sticky="ew")
         ttk.Button(box, text="Deep memory capture (RAW)", command=self._deep_capture)\
             .grid(row=1, column=0, columnspan=2, sticky="ew", pady=(3, 0))
+
+        box = ttk.LabelFrame(panel, text="Setup", padding=6)
+        box.grid(row=row, column=0, sticky="ew", pady=(0, 6)); row += 1
+        ttk.Button(box, text="Save setup", command=self._save_setup)\
+            .grid(row=0, column=0, sticky="ew", padx=(0, 3))
+        ttk.Button(box, text="Load setup", command=self._load_setup)\
+            .grid(row=0, column=1, sticky="ew")
 
         self.status = tk.StringVar(value="Ready.")
         ttk.Label(panel, textvariable=self.status, wraplength=260, foreground="#333")\
@@ -227,6 +252,16 @@ class App(ttk.Frame):
                           state="readonly", width=13)
         cb.grid(row=row, column=1, columnspan=2, sticky="ew", pady=1)
         cb.bind("<<ComboboxSelected>>", lambda _e: command())
+        return var
+
+    def _entry(self, parent, label, row, command):
+        """A numeric entry that applies on Enter or when focus leaves."""
+        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=1)
+        var = tk.StringVar()
+        widget = ttk.Entry(parent, textvariable=var, width=13)
+        widget.grid(row=row, column=1, columnspan=2, sticky="ew", pady=1)
+        widget.bind("<Return>", lambda _e: command())
+        widget.bind("<FocusOut>", lambda _e: command())
         return var
 
     def _build_plot(self):
@@ -243,8 +278,28 @@ class App(ttk.Frame):
         self.ax.set_ylabel("Voltage (V)")
         self.fig.tight_layout()
 
+        # The draggable trigger-level marker. Dragging only moves this artist;
+        # the SCPI write happens once, on mouse release, so a drag can't flood
+        # the USBTMC link with dozens of commands.
+        self.level_line = self.ax.axhline(0.0, color="#ff5555", linewidth=1.2,
+                                          linestyle="--", visible=False)
+        self.level_tag = self.ax.annotate(
+            "T", xy=(1.0, 0.0), xycoords=("axes fraction", "data"),
+            xytext=(3, 0), textcoords="offset points",
+            color="#ff5555", fontsize=8, va="center", visible=False)
+
         self.canvas = FigureCanvasTkAgg(self.fig, master=right)
         self.canvas.get_tk_widget().grid(row=0, column=0, sticky="nsew")
+
+        self.dragging_level = False
+        self.pan = None                       # in-progress drag-to-pan state
+        self.vscales = {1: 1.0, 2: 1.0}
+        self.voffsets = {1: 0.0, 2: 0.0}
+        self.time_off = 0.0
+        self.canvas.mpl_connect("button_press_event", self._on_plot_press)
+        self.canvas.mpl_connect("motion_notify_event", self._on_plot_motion)
+        self.canvas.mpl_connect("button_release_event", self._on_plot_release)
+        self.canvas.mpl_connect("scroll_event", self._on_plot_scroll)
 
         self.meas_var = tk.StringVar(value="")
         ttk.Label(right, textvariable=self.meas_var, font=("Consolas", 9),
@@ -344,47 +399,37 @@ class App(ttk.Frame):
 
     @staticmethod
     def _read_settings_job(scope):
-        """Snapshot the scope's current state so the panel mirrors the front panel."""
-        state = {
-            "timebase": scope.timebase(),
-            "acq_type": scope.query(":ACQ:TYPE?"),
-            "acq_avg": scope.query(":ACQ:AVER?"),
-            "acq_mem": scope.query(":ACQ:MEMD?"),
-            "trig_mode": scope.trigger_mode(),
-            "channels": {},
-        }
-        for ch in (1, 2):
-            state["channels"][ch] = {
-                "on": scope.channel_on(ch),
-                "scale": scope.volt_scale(ch),
-                "coupling": scope.coupling(ch),
-            }
-        try:
-            state.update({
-                "trig_src": scope.trigger_source(),
-                "trig_slope": scope.trigger_slope(),
-                "trig_sweep": scope.trigger_sweep(),
-                "trig_level": scope.trigger_level(),
-            })
-        except Exception:
-            pass  # some trigger modes lack part of this; leave those boxes blank
-        return state
+        """Mirror the instrument's current state onto the panel."""
+        return scope.snapshot()
 
     def _on_settings(self, st):
         self.timebase.set(rig.eng(st["timebase"], "s"))
-        self.acq_type.set(st["acq_type"].upper())
-        self.acq_avg.set(str(int(float(st["acq_avg"]))))
-        self.acq_mem.set(st["acq_mem"].upper())
-        self.trig_mode.set(st["trig_mode"].upper())
-        for ch, info in st["channels"].items():
+        self.time_offset.set(f"{st['time_offset']:.6g}")
+        self.time_off = st["time_offset"]
+        self.acq_type.set(st["acq_type"])
+        self.acq_avg.set(str(st["acq_average"]))
+        self.acq_mem.set(st["acq_memdepth"])
+
+        for ch_key, info in st["channels"].items():
+            ch = int(ch_key)
             self.ch_on[ch].set(info["on"])
+            self.ch_probe[ch].set(f"{int(info['probe'])}X")
             self.ch_scale[ch].set(rig.eng(info["scale"], "V"))
-            self.ch_coup[ch].set(info["coupling"].upper())
-        if "trig_src" in st:
-            self.trig_src.set(st["trig_src"].upper())
-            self.trig_slope.set(st["trig_slope"].upper())
-            self.trig_sweep.set(st["trig_sweep"].upper())
-            self.trig_level.set(f"{st['trig_level']:.4g}")
+            self.ch_coup[ch].set(info["coupling"])
+            self.ch_offset[ch].set(f"{info['offset']:.6g}")
+            self.vscales[ch] = info["scale"]
+            self.voffsets[ch] = info["offset"]
+
+        trig = st["trigger"]
+        self.trig_mode.set(trig["mode"])
+        for var, key in ((self.trig_src, "source"), (self.trig_slope, "slope"),
+                         (self.trig_sweep, "sweep")):
+            if key in trig:
+                var.set(trig[key])
+        if "holdoff" in trig:
+            self.trig_holdoff.set(f"{trig['holdoff']:.6g}")
+        if "level" in trig:
+            self._show_level(trig["level"])
 
         if self.live_var.get():
             self.worker.streaming.set()
@@ -432,21 +477,44 @@ class App(ttk.Frame):
         on = self.ch_on[ch].get()
         scale = self._parse_combo(self.ch_scale[ch].get(), rig.VOLT_SCALES, "V")
         coup = self.ch_coup[ch].get()
+        probe = self.ch_probe[ch].get()
+        probe = float(probe.rstrip("Xx")) if probe else None
+        offset = self._parse_float(self.ch_offset[ch].get())
+
+        if scale is not None:
+            self.vscales[ch] = scale  # keeps the level step and clamp in sync
+        if offset is not None:
+            self.voffsets[ch] = offset
 
         def job(scope):
             scope.set_channel_on(ch, on)
-            if on:
-                if scale is not None:
-                    scope.set_volt_scale(ch, scale)
-                if coup:
-                    scope.set_coupling(ch, coup)
+            if not on:
+                return
+            # Probe first: changing it rescales volts/div and the offset.
+            if probe is not None:
+                scope.set_probe(ch, probe)
+            if coup:
+                scope.set_coupling(ch, coup)
+            if scale is not None:
+                scope.set_volt_scale(ch, scale)
+            if offset is not None:
+                scope.set_volt_offset(ch, offset)
 
         self._do(job, "cmd")
 
     def _apply_timebase(self):
-        value = self._parse_combo(self.timebase.get(), rig.TIME_SCALES, "s")
-        if value is not None:
-            self._do(lambda s: s.set_timebase(value), "cmd")
+        scale = self._parse_combo(self.timebase.get(), rig.TIME_SCALES, "s")
+        position = self._parse_float(self.time_offset.get())
+        if position is not None:
+            self.time_off = position
+
+        def job(scope):
+            if scale is not None:
+                scope.set_timebase(scale)
+            if position is not None:
+                scope.set_time_offset(position)
+
+        self._do(job, "cmd")
 
     def _apply_acquire(self):
         atype = self.acq_type.get() or None
@@ -475,9 +543,183 @@ class App(ttk.Frame):
         slope = self.trig_slope.get() or None
         sweep = self.trig_sweep.get() or None
         coup = self.trig_coup.get() or None
+        holdoff = self._parse_float(self.trig_holdoff.get())
+
+        if level is not None:
+            level = self._clamp_level(level)
+            self._show_level(level)
 
         self._do(lambda s: s.set_trigger(source=src, slope=slope, level=level,
-                                         coupling=coup, sweep=sweep), "cmd")
+                                         coupling=coup, sweep=sweep,
+                                         holdoff=holdoff), "cmd")
+
+    # ----------------------------------------------------------- level input
+
+    def _trigger_channel(self):
+        """Which channel's volts/div governs the level, or None for EXT/ACLINE."""
+        src = self.trig_src.get().upper()
+        if "2" in src:
+            return 2
+        if "1" in src:
+            return 1
+        return None
+
+    def _level_span(self):
+        """The scope only accepts a trigger level within +/-6 divisions."""
+        ch = self._trigger_channel()
+        return 6.0 * self.vscales.get(ch, 1.0) if ch else float("inf")
+
+    def _clamp_level(self, level):
+        limit = self._level_span()
+        clamped = max(-limit, min(limit, level))
+        if clamped != level:
+            self.status.set(f"Level clamped to +/-6 div ({rig.eng(limit, 'V')}).")
+        return clamped
+
+    def _show_level(self, level):
+        """Update the entry box and the marker without touching the instrument."""
+        self.trig_level.set(f"{level:.4g}")
+        self.level_line.set_ydata([level, level])
+        self.level_line.set_visible(True)
+        self.level_tag.set_visible(True)
+        self.level_tag.xy = (1.0, level)
+        self.canvas.draw_idle()
+
+    def _push_level(self, level):
+        level = self._clamp_level(level)
+        self._show_level(level)
+        self._do(lambda s: s.set_trigger(level=level), "cmd")
+
+    def _level_50(self):
+        def job(scope):
+            return scope.trigger_level_50()
+
+        self._do(job, "level50")
+
+    def _on_level50(self, level):
+        self._show_level(level)
+        self.status.set(f"Level set to 50% ({rig.eng(level, 'V')}).")
+
+    def _near_level(self, event):
+        """True if the cursor is within a few pixels of the marker line."""
+        if event.ydata is None or not self.level_line.get_visible():
+            return False
+        low, high = self.ax.get_ylim()
+        tolerance = abs(high - low) * 0.03
+        return abs(event.ydata - self.level_line.get_ydata()[0]) < tolerance
+
+    def _on_plot_press(self, event):
+        if not self.connected or event.inaxes is not self.ax or event.button != 1:
+            return
+        if self._near_level(event):
+            self.dragging_level = True
+        elif event.dblclick:
+            # Double-clicking anywhere drops the level right there.
+            self._push_level(event.ydata)
+        else:
+            self._pan_start(event)
+
+    def _on_plot_motion(self, event):
+        if self.pan is not None:
+            self._pan_move(event)
+            return
+        if event.inaxes is not self.ax or event.ydata is None:
+            return
+        if self.dragging_level:
+            self._show_level(event.ydata)  # local only; the write waits for release
+        else:
+            cursor = "sb_v_double_arrow" if self._near_level(event) else "fleur"
+            try:
+                self.canvas.get_tk_widget().configure(cursor=cursor)
+            except tk.TclError:
+                pass
+
+    def _on_plot_release(self, event):
+        if self.pan is not None:
+            self._pan_finish(event)
+            return
+        if not self.dragging_level:
+            return
+        self.dragging_level = False
+        level = event.ydata
+        if level is None:
+            level = self.level_line.get_ydata()[0]
+        self._push_level(level)
+
+    # -------------------------------------------------------- drag-to-pan
+
+    # Dragging shifts the *view* while the mouse is down and writes the new
+    # offsets once, on release. Doing it live would put a pair of SCPI writes
+    # on every mouse-move event and stall the USBTMC link.
+
+    def _pan_start(self, event):
+        self.pan = {
+            "px": (event.x, event.y),
+            "xlim": self.ax.get_xlim(),
+            "ylim": self.ax.get_ylim(),
+            "time_off": self.time_off,
+            "ch": self.active_ch.get(),
+        }
+        self.pan["voffset"] = self.voffsets.get(self.pan["ch"], 0.0)
+
+    def _pan_delta(self, pan, event):
+        """Convert the pixel drag into data units against the pre-drag limits."""
+        box = self.ax.get_window_extent()
+        x0, y0 = pan["px"]
+        xlim, ylim = pan["xlim"], pan["ylim"]
+        dx = (event.x - x0) / box.width * (xlim[1] - xlim[0])
+        dy = (event.y - y0) / box.height * (ylim[1] - ylim[0])
+        return dx, dy
+
+    def _pan_move(self, event):
+        if event.x is None or event.y is None:
+            return
+        dx, dy = self._pan_delta(self.pan, event)
+        xlim, ylim = self.pan["xlim"], self.pan["ylim"]
+        self.ax.set_xlim(xlim[0] - dx, xlim[1] - dx)
+        self.ax.set_ylim(ylim[0] - dy, ylim[1] - dy)
+        self.canvas.draw_idle()
+
+    def _pan_finish(self, event):
+        pan, self.pan = self.pan, None
+        if event.x is None or event.y is None:
+            return
+
+        dx, dy = self._pan_delta(pan, event)
+        if abs(dx) < 1e-15 and abs(dy) < 1e-15:
+            return              # a plain click, not a drag
+
+        ch = pan["ch"]
+        # Displayed volts are raw volts minus the channel offset, so moving the
+        # trace up by dy means decreasing the offset by the same amount.
+        time_off = pan["time_off"] - dx
+        voffset = pan["voffset"] - dy
+
+        self.time_off = time_off
+        self.voffsets[ch] = voffset
+        self.time_offset.set(f"{time_off:.6g}")
+        self.ch_offset[ch].set(f"{voffset:.6g}")
+
+        def job(scope):
+            scope.set_time_offset(time_off)
+            scope.set_volt_offset(ch, voffset)
+
+        self._do(job, "cmd")
+
+    def _on_plot_scroll(self, event):
+        """Fine adjustment: one notch moves the level a fifth of a division."""
+        if not self.connected or event.inaxes is not self.ax:
+            return
+        ch = self._trigger_channel()
+        step = self.vscales.get(ch, 1.0) / 5.0 if ch else 0.05
+        self._push_level(self.level_line.get_ydata()[0] + event.step * step)
+
+    @staticmethod
+    def _parse_float(text):
+        try:
+            return float(text)
+        except (TypeError, ValueError):
+            return None
 
     @staticmethod
     def _parse_combo(text, table, unit):
@@ -512,9 +754,13 @@ class App(ttk.Frame):
                 line.set_visible(False)
 
         span = max(np.max(np.abs(v)) for v in traces.values()) if traces else 1.0
+        if self.level_line.get_visible():
+            # Keep the marker on screen even when it sits outside the signal.
+            span = max(span, abs(self.level_line.get_ydata()[0]))
         span = span * 1.15 or 1.0
-        self.ax.set_xlim(t[0], t[-1])
-        self.ax.set_ylim(-span, span)
+        if self.pan is None:      # a drag in progress owns the view; don't fight it
+            self.ax.set_xlim(t[0], t[-1])
+            self.ax.set_ylim(-span, span)
         self.canvas.draw_idle()
 
     def _on_meas(self, stats):
@@ -562,6 +808,57 @@ class App(ttk.Frame):
             return
         self.fig.savefig(path, dpi=150, bbox_inches="tight")
         self.status.set(f"Wrote {path}")
+
+    def _save_setup(self):
+        path = filedialog.asksaveasfilename(defaultextension=".json",
+                                            filetypes=[("Setup", "*.json")],
+                                            initialfile="setup.json")
+        if not path:
+            return
+        self._do(lambda s: (path, s.snapshot()), "savesetup")
+
+    def _on_savesetup(self, payload):
+        path, state = payload
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(state, fh, indent=2, ensure_ascii=False)
+        self.status.set(f"Wrote {path}")
+
+    def _load_setup(self):
+        path = filedialog.askopenfilename(filetypes=[("Setup", "*.json"),
+                                                     ("All files", "*.*")])
+        if not path:
+            return
+        try:
+            with open(path, encoding="utf-8") as fh:
+                state = json.load(fh)
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("Cannot read setup", str(exc))
+            return
+
+        saved_idn = state.get("idn")
+        if saved_idn and self.idn_var.get() not in ("", "not connected") \
+                and saved_idn != self.idn_var.get():
+            if not messagebox.askyesno(
+                    "Different instrument",
+                    f"This setup was saved from:\n{saved_idn}\n\n"
+                    f"Currently connected:\n{self.idn_var.get()}\n\nApply anyway?"):
+                return
+
+        def job(scope):
+            warnings = scope.restore(state)
+            return warnings, scope.snapshot()
+
+        self._do(job, "loadsetup")
+
+    def _on_loadsetup(self, payload):
+        warnings, state = payload
+        self._on_settings(state)
+        if warnings:
+            self.status.set(f"Restored with {len(warnings)} problem(s).")
+            messagebox.showwarning("Setup restored with warnings",
+                                   "\n".join(warnings))
+        else:
+            self.status.set("Setup restored.")
 
     def _deep_capture(self):
         """Stop and pull the full acquisition memory instead of the 600 screen points."""
