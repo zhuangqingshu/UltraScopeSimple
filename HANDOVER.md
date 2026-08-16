@@ -71,7 +71,10 @@ volts = (255 - raw_byte - 130 - offset/scale*25) / 25 * scale
   设不进去且无提示。现在所有浮点写入都经 `units.scpi_number()` 强制转普通小数。
   **新增任何写入浮点的 SCPI 命令时，务必走 `scpi_number()`。**
 - 触发电平超出 ±6 格 → 被忽略。`Scope.clamp_trigger_level()` 夹住，GUI 侧另有提示
-- `:TRIG:HOLD` 超出 500 ns – 1.5 s → 被忽略。`set_holdoff()` 主动抛错
+- `:TRIG:HOLD` 超出 **100 ns – 1.5 s** → 被忽略。`set_holdoff()` 主动抛错。
+  下限原写 500 ns，是错的：User's Guide 规格表写 `100ns~1.5s`，触发菜单的
+  「Holdoff Reset」也把释抑复位到 100 ns。旧下限会拒掉示波器自己的默认值，
+  使得面板复位后存的配置恢复不回来。**改成 100 ns 后尚未接真机确认**
 - 平均次数超出 2–256 → `set_acquire()` 主动抛错
 - 探头衰减比改变会连带重算 V/div 和 offset，所以**写入顺序必须是 probe → coupling →
   scale → offset**。`Scope.restore()` 和 GUI 的 `_apply_channel()` 都遵守这个顺序，
@@ -222,6 +225,25 @@ source/slope/level，PULSE 的脉宽条件、SLOPE 的时间条件等无处可�
 | `import ultrascope` 找不到 | 没 `pip install -e .`；装过之后在任何目录都能用 |
 
 ## 8. 存疑项
+
+**仓库里的 PDF 是 User's Guide，不是 Programming Guide。** `docs/DS1000D_E_Manual_EN.pdf`
+讲的是前面板操作，全文没有任何 SCPI 命令——搜 `:TRIG`、`PULS` 一无所获。现有代码里的命令
+拼写来自早期开发时的经验，并非查手册所得。
+
+这对第二阶段（各触发类型专属参数）是硬阻碍：本机对拼错的命令是**静默忽略**的，没有
+命令参考就无法区分"命令写错了"和"参数超范围了"。动手前应先取得 Rigol 的
+*DS1000E/D Series Programming Guide*。
+
+User's Guide 仍给出了与命令拼写无关的硬件事实，实现时可直接采用：
+
+| 参数 | 范围（User's Guide） |
+|------|--------------------|
+| 脉宽触发条件 | 正脉冲 >、<、=；负脉冲 >、<、= 共六种 |
+| 脉宽 | 20 ns ~ 10 s |
+| 斜率触发条件 | 同上六种；时间 20 ns ~ 10 s |
+| 视频行号 | NTSC 1~525；PAL/SECAM 1~625 |
+| 触发释抑 | 100 ns ~ 1.5 s |
+
 
 **屏幕截图功能。** `官方软件/` 里带了 `Ultra Sigma patch file for Screenshot`，说明 UltraSigma
 原生截图有问题。DS1102E 是否支持可用的 `:DISP:DATA?` 未经验证。实际意义有限——已能拿到原始数据

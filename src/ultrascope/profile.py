@@ -69,7 +69,12 @@ class DeviceProfile:
     # error, which just looks like "the setting did nothing". Range-check here.
     average_min: int = 2
     average_max: int = 256
-    holdoff_min: float = 500e-9
+    # User's Guide states 100 ns - 1.5 s in two places: the specification table
+    # ("Trigger Holdoff range 100ns~1.5s") and the trigger menu, where the
+    # instrument's own "Holdoff Reset" sets 100 ns. An earlier 500 ns floor here
+    # rejected the scope's own default, which made restore() refuse to reapply a
+    # setup saved right after a front-panel reset.
+    holdoff_min: float = 100e-9
     holdoff_max: float = 1.5
     # A trigger level further than this many divisions from centre is rejected.
     trigger_level_divs: float = 6.0

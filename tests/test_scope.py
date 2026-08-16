@@ -265,7 +265,7 @@ def test_restore_writes_probe_before_scale_and_offset():
 
 # --- holdoff ---------------------------------------------------------------
 
-@pytest.mark.parametrize("seconds", [1e-9, 100e-9, 2.0, 60.0])
+@pytest.mark.parametrize("seconds", [1e-9, 50e-9, 2.0, 60.0])
 def test_holdoff_outside_the_supported_range_is_rejected(seconds):
     scope, _ = make_scope()
     with pytest.raises(ScopeError):
@@ -273,14 +273,24 @@ def test_holdoff_outside_the_supported_range_is_rejected(seconds):
 
 
 @pytest.mark.parametrize("seconds, written", [
-    (500e-9, ":TRIG:HOLD 0.0000005"), (1e-3, ":TRIG:HOLD 0.001"),
-    (1.5, ":TRIG:HOLD 1.5"),
+    # 100 ns is the instrument's own "Holdoff Reset" value, so it must be legal.
+    (100e-9, ":TRIG:HOLD 0.0000001"), (500e-9, ":TRIG:HOLD 0.0000005"),
+    (1e-3, ":TRIG:HOLD 0.001"), (1.5, ":TRIG:HOLD 1.5"),
 ])
 def test_holdoff_inside_the_range_is_written(seconds, written):
     # Plain decimals only: the scope ignores ":TRIG:HOLD 5e-07" outright.
     scope, transport = make_scope()
     scope.set_holdoff(seconds)
     assert sent(transport, ":TRIG:HOLD") == [written]
+
+
+def test_the_scopes_own_reset_default_round_trips():
+    # Front panel "Holdoff Reset" gives 100 ns; a setup saved just after that
+    # has to be restorable, which a 500 ns floor used to prevent.
+    scope, transport = make_scope({":TRIG:MODE?": "EDGE"})
+    warnings = scope.restore({"trigger": {"mode": "EDGE", "holdoff": 100e-9}})
+    assert warnings == []
+    assert ":TRIG:HOLD 0.0000001" in transport.written
 
 
 def test_set_trigger_range_checks_holdoff_too():
