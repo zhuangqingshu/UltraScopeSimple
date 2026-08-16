@@ -110,7 +110,7 @@ src/ultrascope/
   export.py      CSV / PNG 落盘
   setup_file.py  配置文件读写
   units.py       eng() 显示格式化、scpi_number() 下发格式化
-  analysis.py    本地分析：光标读数、插值取样（纯函数，不碰仪器）
+  analysis.py    本地分析：光标读数、插值取样、FFT 频谱（纯函数，不碰仪器）
   cli.py         argparse 命令行
   gui/           worker / state / panels / plot / app
 ```
@@ -157,11 +157,15 @@ USBTMC 不能被两处同时使用，而实时刷新和用户点按钮天然会�
 ## 5. 进度
 
 `ROADMAP.md` 第一阶段五项已完成。第二阶段完成 PULSE 与 SLOPE，VIDEO / PATTERN /
-DURATION 未做。第三阶段完成光标测量。第四、五阶段未开始。
+DURATION 未做。第三阶段完成光标测量与 FFT 频谱。第四、五阶段未开始。
 
-**光标测量是纯本地计算**（`analysis.py` + `gui/plot.py`），完全不走 SCPI，所以没有
-验证债，断开连接也能用。第三阶段其余项（FFT、更多测量、参考波形）性质相同，
-在等硬件时是最划算的方向。
+**光标测量与 FFT 都是纯本地计算**（`analysis.py` + `gui/plot.py`），完全不走 SCPI，
+所以没有验证债，断开连接也能用（`App.ALWAYS_ENABLED` 让这两个面板不随连接状态禁用）。
+第三阶段其余项（更多测量、参考波形、余辉）性质相同，在等硬件时是最划算的方向。
+
+FFT 的一个前提要记住：**仪器不报时标，采样率是由合成时间轴反推的**
+（600 点 / (12 × 时基)）。那是屏幕抽取后的数据，远低于真实采集率，所以频谱反映的是
+"屏幕上这条波形"，高频成分在到达我们之前就已被仪器混叠。这不是可以靠改代码解决的。
 
 **PULSE / SLOPE 的 SCPI 命令拼写未经核实，也尚未接真机验证**——原因见第 8 节。
 拼写集中在 `profile.py` 的 `DS1000E_PULSE_TRIGGER` / `DS1000E_SLOPE_TRIGGER`，

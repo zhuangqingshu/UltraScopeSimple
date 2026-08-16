@@ -32,6 +32,13 @@ GRAB_TOLERANCE = 0.03
 # One scroll notch nudges the level by this fraction of a division.
 SCROLL_STEP_DIV = 0.2
 
+TIME_DOMAIN = "time"
+SPECTRUM_DOMAIN = "spectrum"
+# How much of the spectrum to show below the strongest bin, and how much air
+# to leave above it.
+SPECTRUM_DB_RANGE = 100.0
+SPECTRUM_DB_HEADROOM = 10.0
+
 
 class PlotCanvas:
     """Draws captures and owns the trigger-level marker and pan gestures."""
@@ -86,6 +93,18 @@ class PlotCanvas:
             self.ax.axvline(0.0, color="#66ff99", linewidth=1.0,
                             linestyle=":", visible=False),
         ]
+        # Spectrum view. Drawn on the same axes; the time-domain artists are
+        # hidden rather than destroyed so switching back is instant.
+        self.domain = TIME_DOMAIN
+        (self.spectrum_line,) = self.ax.plot([], [], color="#ff9d3a",
+                                             linewidth=1.0, visible=False)
+        self.spectrum_window = analysis.DEFAULT_WINDOW
+
+        self.spectrum_readout = tk.StringVar(value="")
+        ttk.Label(self.container, textvariable=self.spectrum_readout,
+                  font=("Consolas", 9), foreground="#c26a00",
+                  justify="left").grid(row=3, column=0, sticky="w")
+
         self.cursors = tk.StringVar(value="")
         ttk.Label(self.container, textvariable=self.cursors,
                   font=("Consolas", 9), foreground="#0a7", justify="left")\
@@ -167,6 +186,66 @@ class PlotCanvas:
 
     def savefig(self, path: str, dpi: int = 150) -> None:
         self.figure.savefig(path, dpi=dpi, bbox_inches="tight")
+
+    # ------------------------------------------------------------- spectrum
+
+    def set_domain(self, domain: str, window: Optional[str] = None) -> None:
+        """Switch the canvas between the trace and its spectrum."""
+        self.domain = domain
+        if window is not None:
+            self.spectrum_window = window
+
+        showing_spectrum = domain == SPECTRUM_DOMAIN
+        for line in self.lines.values():
+            line.set_visible(not showing_spectrum)
+        self.spectrum_line.set_visible(showing_spectrum)
+        if showing_spectrum:
+            # The level marker and cursors measure volts against time; neither
+            # means anything here, so take them off rather than mislabel them.
+            self.level_line.set_visible(False)
+            self.level_tag.set_visible(False)
+            self.set_cursor_mode(analysis.OFF)
+            self.ax.set_xlabel("Frequency (Hz)")
+            self.ax.set_ylabel("Magnitude (dBV)")
+            legend = self.ax.get_legend()
+            if legend is not None:
+                legend.set_visible(False)
+        else:
+            self.ax.set_xlabel("Time (s)")
+            self.ax.set_ylabel("Voltage (V)")
+            self.spectrum_readout.set("")
+            legend = self.ax.get_legend()
+            if legend is not None:
+                legend.set_visible(True)
+        self.canvas.draw_idle()
+
+    def show_spectrum(self, wave: Waveform, channel: Optional[int] = None) -> None:
+        """Draw the spectrum of one channel of a capture."""
+        if channel is None:
+            channel = wave.channel_ids[0] if wave.channel_ids else None
+        spec = (analysis.spectrum(wave, channel, self.spectrum_window)
+                if channel is not None else None)
+        if spec is None:
+            self.spectrum_line.set_data([], [])
+            self.spectrum_readout.set("No spectrum for this capture.")
+            self.canvas.draw_idle()
+            return
+
+        db = spec.db
+        self.spectrum_line.set_data(spec.freqs, db)
+        self.spectrum_line.set_visible(True)
+        self.ax.set_xlim(0.0, spec.freqs[-1])
+        top = float(np.max(db))
+        self.ax.set_ylim(top - SPECTRUM_DB_RANGE, top + SPECTRUM_DB_HEADROOM)
+
+        frequency, volts = spec.peak()
+        peak = ("--" if frequency is None
+                else f"{eng(frequency, 'Hz')} @ {eng(volts, 'V')}")
+        self.spectrum_readout.set(
+            f"CH{channel}  peak={peak}   window={spec.window}"
+            f"   res={eng(spec.resolution, 'Hz')}"
+            f"   fs={eng(spec.sample_rate, 'Sa/s')}")
+        self.canvas.draw_idle()
 
     # -------------------------------------------------------------- cursors
 
@@ -277,6 +356,8 @@ class PlotCanvas:
     # ------------------------------------------------------------ gestures
 
     def _on_press(self, event) -> None:
+        if self.domain != TIME_DOMAIN:
+            return
         # Cursors are local, so unlike the rest of the gestures they stay live
         # while disconnected; check them before the enabled() gate.
         if event.inaxes is self.ax and event.button == 1:
@@ -332,6 +413,8 @@ class PlotCanvas:
 
     def _on_scroll(self, event) -> None:
         """Fine adjustment: one notch moves the level a fifth of a division."""
+        if self.domain != TIME_DOMAIN:
+            return
         if not self.enabled() or event.inaxes is not self.ax:
             return
         ch = self.trigger_channel()

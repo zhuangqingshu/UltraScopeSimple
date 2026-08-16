@@ -3,9 +3,10 @@
 import numpy as np
 import pytest
 
-from ultrascope.analysis import (OFF, TIME, VOLTAGE, cursor_readings,
-                                 default_cursor_positions, nearest_cursor,
-                                 sample_at)
+from ultrascope.analysis import (DEFAULT_WINDOW, OFF, TIME, VOLTAGE, WINDOWS,
+                                 cursor_readings, default_cursor_positions,
+                                 nearest_cursor, sample_at, sample_rate,
+                                 spectrum)
 from ultrascope.profile import DS1000E
 from ultrascope.waveform import Waveform, time_axis
 
@@ -113,3 +114,124 @@ def test_nothing_is_grabbed_beyond_the_tolerance():
 def test_unplaced_cursors_are_skipped():
     assert nearest_cursor([None, 5.0], 5.1, tolerance=1.0) == 1
     assert nearest_cursor([None, None], 5.0, tolerance=1.0) is None
+
+
+# --- spectrum ---------------------------------------------------------------
+
+def sine_wave(frequency=1000.0, amplitude=1.0, offset=0.0,
+              npoints=600, timebase=1e-3):
+    t = time_axis(npoints, timebase, 0.0, DS1000E)
+    volts = offset + amplitude * np.sin(2 * np.pi * frequency * t)
+    return Waveform(t=t, channels={1: volts}, timebase=timebase, time_offset=0.0)
+
+
+def test_sample_rate_comes_from_the_synthesised_axis():
+    # 600 points across 12 divisions of 1 ms.
+    wave = sine_wave()
+    assert sample_rate(wave) == pytest.approx(599 / 12e-3, rel=1e-6)
+
+
+def test_sample_rate_of_a_degenerate_capture_is_zero():
+    flat = Waveform(t=np.zeros(1), channels={1: np.zeros(1)},
+                    timebase=1e-3, time_offset=0.0)
+    assert sample_rate(flat) == 0.0
+    assert spectrum(flat, 1) is None
+
+
+@pytest.mark.parametrize("window", WINDOWS)
+def test_a_one_volt_sine_reads_one_volt_whatever_the_window(window):
+    # Without dividing by the window's coherent gain every window would
+    # under-report the amplitude, quietly and by a different factor each.
+    spec = spectrum(sine_wave(amplitude=1.0), 1, window)
+    _frequency, volts = spec.peak()
+    assert volts == pytest.approx(1.0, abs=0.02)
+
+
+@pytest.mark.parametrize("amplitude", [0.1, 0.5, 2.0, 5.0])
+def test_the_peak_tracks_the_amplitude(amplitude):
+    spec = spectrum(sine_wave(amplitude=amplitude), 1)
+    _frequency, volts = spec.peak()
+    assert volts == pytest.approx(amplitude, rel=0.03)
+
+
+def test_the_peak_lands_on_the_signal_frequency():
+    spec = spectrum(sine_wave(frequency=2000.0), 1)
+    frequency, _volts = spec.peak()
+    assert frequency == pytest.approx(2000.0, abs=spec.resolution)
+
+
+def test_dc_offset_shows_in_the_zero_bin_at_its_real_size():
+    spec = spectrum(sine_wave(amplitude=1.0, offset=0.5), 1, "rectangular")
+    assert spec.magnitudes[0] == pytest.approx(0.5, abs=0.02)
+
+
+def test_the_peak_ignores_dc_so_an_offset_does_not_win():
+    # A large offset would otherwise make every spectrum report 0 Hz.
+    spec = spectrum(sine_wave(amplitude=0.2, offset=5.0), 1)
+    frequency, _volts = spec.peak()
+    assert frequency == pytest.approx(1000.0, abs=spec.resolution)
+
+
+def test_frequencies_run_from_dc_to_nyquist():
+    spec = spectrum(sine_wave(), 1)
+    assert spec.freqs[0] == 0.0
+    assert spec.freqs[-1] == pytest.approx(spec.sample_rate / 2, rel=1e-6)
+
+
+def test_resolution_is_the_bin_spacing():
+    spec = spectrum(sine_wave(), 1)
+    assert spec.resolution == pytest.approx(spec.freqs[1] - spec.freqs[0])
+    # 12 ms of record cannot resolve better than about 83 Hz.
+    assert spec.resolution == pytest.approx(1 / 12e-3, rel=0.05)
+
+
+def test_silence_reads_as_the_floor_rather_than_minus_infinity():
+    t = time_axis(600, 1e-3, 0.0, DS1000E)
+    silent = Waveform(t=t, channels={1: np.zeros(600)},
+                      timebase=1e-3, time_offset=0.0)
+    spec = spectrum(silent, 1)
+    assert np.all(np.isfinite(spec.db))
+
+
+def test_db_matches_the_magnitudes():
+    spec = spectrum(sine_wave(amplitude=1.0), 1)
+    _frequency, volts = spec.peak()
+    assert spec.db.max() == pytest.approx(20 * np.log10(volts), abs=0.01)
+
+
+def test_an_absent_channel_has_no_spectrum():
+    assert spectrum(sine_wave(), 2) is None
+
+
+def test_an_unknown_window_is_rejected():
+    with pytest.raises(ValueError, match="unknown window"):
+        spectrum(sine_wave(), 1, "triangular")
+
+
+def test_the_default_window_is_one_of_the_supported_ones():
+    assert DEFAULT_WINDOW in WINDOWS
+
+
+@pytest.mark.parametrize("window", WINDOWS)
+def test_a_large_offset_never_beats_the_signal(window):
+    # 5 V of DC under a 0.2 V signal: the window smears the offset across its
+    # main lobe, so skipping bin 0 alone is not enough.
+    spec = spectrum(sine_wave(amplitude=0.2, offset=5.0), 1, window)
+    frequency, volts = spec.peak()
+    assert frequency == pytest.approx(1000.0, abs=spec.resolution)
+    assert volts == pytest.approx(0.2, rel=0.1)
+
+
+def test_every_window_declares_a_main_lobe_width():
+    from ultrascope.analysis import WINDOW_MAIN_LOBE_BINS
+
+    assert set(WINDOW_MAIN_LOBE_BINS) == set(WINDOWS)
+    assert WINDOW_MAIN_LOBE_BINS["rectangular"] == 1   # narrowest
+    assert all(v >= 1 for v in WINDOW_MAIN_LOBE_BINS.values())
+
+
+def test_a_signal_close_to_dc_is_still_found():
+    # The skip must not be so wide that low-frequency signals are lost.
+    spec = spectrum(sine_wave(frequency=500.0, amplitude=1.0), 1, "rectangular")
+    frequency, _volts = spec.peak()
+    assert frequency == pytest.approx(500.0, abs=spec.resolution)

@@ -16,7 +16,7 @@ Layering is strictly one-directional: `cli.py`/`gui/` → `scope.py` → `wavefo
 - `transport.py` — the only module importing pyvisa. `Transport` protocol + `PyVisaTransport` + `FakeTransport`. Timeouts change via the `timeout(ms)` context manager.
 - `profile.py` — `DeviceProfile` holds every per-model hardware fact, including the PULSE/SLOPE condition specs. New model = new profile, not edits to the decode path.
 - `waveform.py` — pure `parse_block` / `decode` / `time_axis` + the `Waveform` value object. `parse_block` rejects short transfers rather than truncating.
-- `analysis.py` — local measurement over a `Waveform` (cursors, sampling). No SCPI, so it works while disconnected.
+- `analysis.py` — local measurement over a `Waveform` (cursors, sampling, FFT). No SCPI, so it works while disconnected.
 - `scope.py` — `Scope` SCPI facade; `Scope.connect()` convenience constructor; `snapshot()` → `ScopeSettings`.
 - `gui/` — `worker.py` / `state.py` / `panels.py` / `plot.py` / `app.py`.
 

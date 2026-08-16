@@ -24,7 +24,7 @@ src/ultrascope/
   scope.py       Scope —— SCPI 指令门面
   export.py      CSV / PNG 落盘
   setup_file.py  配置文件读写
-  analysis.py    本地分析：光标读数、插值取样
+  analysis.py    本地分析：光标读数、插值取样、FFT 频谱
   units.py       eng() 显示格式化、scpi_number() 下发格式化
   cli.py         命令行工具
   gui/           Tkinter 界面（worker / state / panels / plot / app）
@@ -50,6 +50,8 @@ ultrascope-gui
   在图上拖动可平移时基与垂直位移（作用于 Active 选中的通道）
 - **Cursors**：Off / Time / Voltage 三档。图上拖动绿色虚线，读出两根光标位置与
   ΔT（附 1/ΔT，直接读频率）或 ΔV。**纯本地计算，不走 SCPI，断开连接也能测已有波形**
+- **Spectrum (FFT)**：勾选后波形区切换为频谱，可选窗函数（矩形/汉宁/海明/布莱克曼）与通道，
+  纵轴 dBV，读数给出峰值频率与幅度、频率分辨率、等效采样率。同样是本地计算，断开也能用
 - **Setup**：保存/加载完整配置（JSON），与 CLI 的 `--save-setup` / `--load-setup` 通用
 - **Export**：保存 CSV / PNG，Deep memory capture 读取深存储（见下方「已知限制」）
 
@@ -144,6 +146,10 @@ pytest
 **PULSE / SLOPE 触发条件尚未在真机上验证。** 这两个模式的 SCPI 命令拼写来自项目早期
 笔记，仓库里的手册是 User's Guide、不含命令参考，无从核对；而本机对拼错的命令是静默
 忽略的。功能可用性待验，详见 [ROADMAP.md](ROADMAP.md) 第二阶段。
+
+**FFT 的频率上限受屏幕数据限制。** 仪器不报逐点时标，等效采样率由时间轴反推
+（600 点 / 12 格时基）。这是屏幕抽取后的数据，远低于真实采集率——频谱反映的是屏幕上
+显示的这条波形，更高频的成分在到达本工具之前就已被仪器混叠。
 
 **深存储采集拿不到完整 1M 点。** 实测（DS1102E 固件 00.04.02.01.00）：RAW 模式下
 仪器的数据块头无论存储深度都声明 1 048 576 字节，但实际只发出约 12 K 就断流。

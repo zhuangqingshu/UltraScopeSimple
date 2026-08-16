@@ -303,6 +303,32 @@ class CursorPanel(Panel):
                   foreground="#777", font=("", 8))            .grid(row=1, column=0, columnspan=3, sticky="w", pady=(2, 0))
 
 
+class SpectrumPanel(Panel):
+    """FFT view. Like the cursors, this is computed locally and stays usable
+    while disconnected."""
+
+    title = "Spectrum (FFT)"
+
+    def __init__(self, parent, on_change):
+        super().__init__(parent)
+        self.enabled_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(self.frame, text="Show spectrum",
+                        variable=self.enabled_var, command=on_change)            .grid(row=0, column=0, columnspan=3, sticky="w")
+        self.window = labelled_combo(self.frame, "Window",
+                                     analysis.WINDOWS, 1, on_change)
+        self.window.set(analysis.DEFAULT_WINDOW)
+        self.channel = labelled_combo(self.frame, "Channel", ("1", "2"), 2,
+                                      on_change)
+        self.channel.set("1")
+
+    def showing(self) -> bool:
+        return bool(self.enabled_var.get())
+
+    def channel_number(self) -> Optional[int]:
+        text = self.channel.get()
+        return int(text) if text.isdigit() else None
+
+
 class SetupPanel(Panel):
     title = "Setup"
 

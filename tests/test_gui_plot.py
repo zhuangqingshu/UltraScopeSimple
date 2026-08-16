@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 
 from ultrascope import analysis
+from ultrascope.gui.plot import SPECTRUM_DOMAIN, TIME_DOMAIN
 from ultrascope.profile import DS1000E
 from ultrascope.waveform import Waveform, time_axis
 
@@ -221,3 +222,87 @@ def test_the_readout_refreshes_when_a_new_frame_arrives(canvas):
     canvas.cursor_positions = [0.0, 2e-3]
     canvas.show(wave_between(-1.0, 1.0))
     assert "dT=" in canvas.cursors.get()
+
+
+# --- spectrum view ----------------------------------------------------------
+
+def tone(frequency=1000.0, amplitude=1.0, npoints=600):
+    t = time_axis(npoints, 1e-3, 0.0, DS1000E)
+    return Waveform(t=t, channels={1: amplitude * np.sin(2 * np.pi * frequency * t)},
+                    timebase=1e-3, time_offset=0.0)
+
+
+def test_the_canvas_starts_in_the_time_domain(canvas):
+    assert canvas.domain == TIME_DOMAIN
+    assert not canvas.spectrum_line.get_visible()
+
+
+def test_switching_to_the_spectrum_swaps_the_visible_traces(canvas):
+    canvas.show(tone())
+    canvas.set_domain(SPECTRUM_DOMAIN)
+    canvas.show_spectrum(tone(), 1)
+    assert canvas.spectrum_line.get_visible()
+    assert not canvas.lines[1].get_visible()
+    assert "Frequency" in canvas.ax.get_xlabel()
+    assert "dBV" in canvas.ax.get_ylabel()
+
+
+def test_switching_back_restores_the_trace(canvas):
+    canvas.show(tone())
+    canvas.set_domain(SPECTRUM_DOMAIN)
+    canvas.set_domain(TIME_DOMAIN)
+    assert canvas.lines[1].get_visible()
+    assert not canvas.spectrum_line.get_visible()
+    assert "Time" in canvas.ax.get_xlabel()
+    assert canvas.spectrum_readout.get() == ""
+
+
+def test_the_readout_names_the_peak(canvas):
+    canvas.show(tone(frequency=2000.0))
+    canvas.set_domain(SPECTRUM_DOMAIN)
+    canvas.show_spectrum(tone(frequency=2000.0), 1)
+    text = canvas.spectrum_readout.get()
+    assert "peak=" in text and "kHz" in text
+    assert "window=" in text and "res=" in text
+
+
+def test_the_window_choice_reaches_the_transform(canvas):
+    canvas.set_domain(SPECTRUM_DOMAIN, window="blackman")
+    canvas.show_spectrum(tone(), 1)
+    assert "blackman" in canvas.spectrum_readout.get()
+
+
+def test_entering_the_spectrum_takes_down_time_domain_overlays(canvas):
+    # A trigger level in volts and cursors in seconds mean nothing against a
+    # frequency axis; leaving them up would mislabel real numbers.
+    canvas.show(tone())
+    canvas.show_level(0.5)
+    canvas.set_cursor_mode(analysis.TIME)
+    canvas.set_domain(SPECTRUM_DOMAIN)
+    assert not canvas.level_line.get_visible()
+    assert canvas.cursor_mode == analysis.OFF
+
+
+def test_gestures_are_suppressed_in_the_spectrum(canvas):
+    canvas.show(tone())
+    canvas.enabled = lambda: True
+    canvas.set_domain(SPECTRUM_DOMAIN)
+    canvas._on_press(press(canvas, xdata=1000.0, ydata=-20.0))
+    assert canvas.pan is None
+    assert canvas.dragging_level is False
+    assert canvas.dragging_cursor is None
+
+
+def test_a_capture_with_no_usable_channel_says_so(canvas):
+    canvas.set_domain(SPECTRUM_DOMAIN)
+    canvas.show_spectrum(tone(), 2)      # channel 2 is not in the capture
+    assert "No spectrum" in canvas.spectrum_readout.get()
+
+
+def test_the_view_is_scaled_around_the_strongest_bin(canvas):
+    from ultrascope.gui.plot import SPECTRUM_DB_HEADROOM, SPECTRUM_DB_RANGE
+
+    canvas.set_domain(SPECTRUM_DOMAIN)
+    canvas.show_spectrum(tone(), 1)
+    low, high = canvas.ax.get_ylim()
+    assert high - low == pytest.approx(SPECTRUM_DB_RANGE + SPECTRUM_DB_HEADROOM)

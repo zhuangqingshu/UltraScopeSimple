@@ -19,8 +19,8 @@ from ..setup_file import load_setup, save_setup
 from ..units import eng
 from .panels import (AcquisitionPanel, ChannelPanel, ConnectionPanel,
                      CursorPanel, ExportPanel, HorizontalPanel, SetupPanel,
-                     TriggerPanel)
-from .plot import PlotCanvas
+                     SpectrumPanel, TriggerPanel)
+from .plot import SPECTRUM_DOMAIN, TIME_DOMAIN, PlotCanvas
 from .worker import Worker
 
 REFRESH_MS = 40           # how often the UI drains the result queue
@@ -80,11 +80,12 @@ class App(ttk.Frame):
                                         self._deep_capture)
         self.setup_panel = SetupPanel(panel, self._save_setup, self._load_setup)
         self.cursor_panel = CursorPanel(panel, self._apply_cursor_mode)
+        self.spectrum_panel = SpectrumPanel(panel, self._apply_spectrum)
 
         self.panels = [self.connection, self.acquisition,
                        *self.channels.values(), self.horizontal,
                        self.trigger, self.export_panel, self.setup_panel,
-                       self.cursor_panel]
+                       self.cursor_panel, self.spectrum_panel]
         for row, item in enumerate(self.panels):
             item.grid(row)
 
@@ -104,7 +105,7 @@ class App(ttk.Frame):
         self.plot.enabled = lambda: self.connected
 
     # Panels that do not talk to the instrument stay live while disconnected.
-    ALWAYS_ENABLED = ("connection", "cursor_panel")
+    ALWAYS_ENABLED = ("connection", "cursor_panel", "spectrum_panel")
 
     def _set_enabled(self, on: bool) -> None:
         """Everything that needs a connection follows the connection state."""
@@ -362,6 +363,15 @@ class App(ttk.Frame):
     def _apply_cursor_mode(self) -> None:
         self.plot.set_cursor_mode(self.cursor_panel.mode.get())
 
+    def _apply_spectrum(self) -> None:
+        showing = self.spectrum_panel.showing()
+        self.plot.set_domain(SPECTRUM_DOMAIN if showing else TIME_DOMAIN,
+                             window=self.spectrum_panel.window.get())
+        # Redraw straight away from the capture already on screen, so the view
+        # does not stay blank until the next live frame.
+        if self.last_capture is not None:
+            self._draw(self.last_capture)
+
     # ---------------------------------------------------------- trigger level
 
     def _show_level(self, level: float) -> None:
@@ -396,7 +406,13 @@ class App(ttk.Frame):
 
     def _on_trace(self, wave) -> None:
         self.last_capture = wave
-        self.plot.show(wave)
+        self._draw(wave)
+
+    def _draw(self, wave) -> None:
+        if self.spectrum_panel.showing():
+            self.plot.show_spectrum(wave, self.spectrum_panel.channel_number())
+        else:
+            self.plot.show(wave)
 
     def _on_meas(self, stats) -> None:
         self.plot.show_measurements(stats)
