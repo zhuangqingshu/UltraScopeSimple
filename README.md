@@ -24,6 +24,7 @@ src/ultrascope/
   scope.py       Scope —— SCPI 指令门面
   export.py      CSV / PNG 落盘
   setup_file.py  配置文件读写
+  analysis.py    本地分析：光标读数、插值取样
   units.py       eng() 显示格式化、scpi_number() 下发格式化
   cli.py         命令行工具
   gui/           Tkinter 界面（worker / state / panels / plot / app）
@@ -47,6 +48,8 @@ ultrascope-gui
   PULSE / SLOPE 模式下多出 Condition（六种条件）与 Width/Time 两栏，切回其他模式自动隐藏
 - **波形图交互**：拖动红色虚线调触发电平（双击定位，滚轮按 1/5 分度微调）；
   在图上拖动可平移时基与垂直位移（作用于 Active 选中的通道）
+- **Cursors**：Off / Time / Voltage 三档。图上拖动绿色虚线，读出两根光标位置与
+  ΔT（附 1/ΔT，直接读频率）或 ΔV。**纯本地计算，不走 SCPI，断开连接也能测已有波形**
 - **Setup**：保存/加载完整配置（JSON），与 CLI 的 `--save-setup` / `--load-setup` 通用
 - **Export**：保存 CSV / PNG，Deep memory capture 读取深存储（见下方「已知限制」）
 
@@ -147,5 +150,6 @@ pytest
 `--mode raw --memdepth long` 会在等待剩余数据时超时；即使读到数据，也是一段被截断的
 块。这不是本工具的回归——重构前的代码行为完全相同，只是此前没有人试过 1M 采样。
 
-在修复之前，深存储采集的结果**不可信**，请以 `--mode normal` 的 600 点数据为准。
+现在深存储采集会**明确报错**（`truncated block: header declares ... only ... arrived`）
+而不是返回残缺数据。请以 `--mode normal` 的 600 点数据为准。
 详见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 第 9 节缺陷 6、7。

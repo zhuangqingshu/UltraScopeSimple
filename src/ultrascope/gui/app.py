@@ -18,7 +18,8 @@ from . import state as st
 from ..setup_file import load_setup, save_setup
 from ..units import eng
 from .panels import (AcquisitionPanel, ChannelPanel, ConnectionPanel,
-                     ExportPanel, HorizontalPanel, SetupPanel, TriggerPanel)
+                     CursorPanel, ExportPanel, HorizontalPanel, SetupPanel,
+                     TriggerPanel)
 from .plot import PlotCanvas
 from .worker import Worker
 
@@ -78,10 +79,12 @@ class App(ttk.Frame):
         self.export_panel = ExportPanel(panel, self._save_csv, self._save_png,
                                         self._deep_capture)
         self.setup_panel = SetupPanel(panel, self._save_setup, self._load_setup)
+        self.cursor_panel = CursorPanel(panel, self._apply_cursor_mode)
 
         self.panels = [self.connection, self.acquisition,
                        *self.channels.values(), self.horizontal,
-                       self.trigger, self.export_panel, self.setup_panel]
+                       self.trigger, self.export_panel, self.setup_panel,
+                       self.cursor_panel]
         for row, item in enumerate(self.panels):
             item.grid(row)
 
@@ -100,10 +103,14 @@ class App(ttk.Frame):
         self.plot.trigger_channel = self.trigger.channel
         self.plot.enabled = lambda: self.connected
 
+    # Panels that do not talk to the instrument stay live while disconnected.
+    ALWAYS_ENABLED = ("connection", "cursor_panel")
+
     def _set_enabled(self, on: bool) -> None:
-        """Everything but the connection box follows the connection state."""
+        """Everything that needs a connection follows the connection state."""
+        always = {getattr(self, name) for name in self.ALWAYS_ENABLED}
         for item in self.panels:
-            if item is not self.connection:
+            if item not in always:
                 item.set_enabled(on)
 
     # ------------------------------------------------------- worker plumbing
@@ -351,6 +358,9 @@ class App(ttk.Frame):
                 scope.set_trigger_condition(condition=condition, seconds=width)
 
         self._do(job)
+
+    def _apply_cursor_mode(self) -> None:
+        self.plot.set_cursor_mode(self.cursor_panel.mode.get())
 
     # ---------------------------------------------------------- trigger level
 

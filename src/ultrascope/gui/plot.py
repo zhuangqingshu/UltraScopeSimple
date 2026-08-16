@@ -12,11 +12,13 @@ from __future__ import annotations
 
 import tkinter as tk
 from tkinter import ttk
+from typing import Optional
 
 import numpy as np
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
+from .. import analysis
 from ..units import eng
 from ..waveform import Waveform
 from . import state as st
@@ -73,6 +75,22 @@ class PlotCanvas:
         self.dragging_level = False
         self.pan = None
 
+        # Local measurement cursors. Purely a view concern: they never reach
+        # the instrument, so they keep working while disconnected.
+        self.cursor_mode = analysis.OFF
+        self.cursor_positions = [None, None]
+        self.dragging_cursor = None
+        self.cursor_lines = [
+            self.ax.axvline(0.0, color="#66ff99", linewidth=1.0,
+                            linestyle=":", visible=False),
+            self.ax.axvline(0.0, color="#66ff99", linewidth=1.0,
+                            linestyle=":", visible=False),
+        ]
+        self.cursors = tk.StringVar(value="")
+        ttk.Label(self.container, textvariable=self.cursors,
+                  font=("Consolas", 9), foreground="#0a7", justify="left")\
+            .grid(row=2, column=0, sticky="w")
+
         # --- hooks the App assigns ---
         self.on_level_commit = lambda level: None
         self.on_pan_commit = lambda time_offset, ch, volt_offset: None
@@ -113,6 +131,8 @@ class PlotCanvas:
         if self.pan is None:   # a drag in progress owns the view; don't fight it
             self.ax.set_xlim(wave.t[0], wave.t[-1])
             self.ax.set_ylim(*self.y_limits(wave))
+        if self.cursor_mode != analysis.OFF:
+            self.cursors.set(self._cursor_text())
         self.canvas.draw_idle()
 
     def y_limits(self, wave: Waveform):
@@ -147,6 +167,73 @@ class PlotCanvas:
 
     def savefig(self, path: str, dpi: int = 150) -> None:
         self.figure.savefig(path, dpi=dpi, bbox_inches="tight")
+
+    # -------------------------------------------------------------- cursors
+
+    def set_cursor_mode(self, mode: str) -> None:
+        """Switch between off, time and voltage cursors.
+
+        Fresh cursors are dropped a third and two thirds of the way across the
+        current view, so they land somewhere useful rather than at the origin.
+        """
+        self.cursor_mode = mode
+        if mode == analysis.OFF:
+            for line in self.cursor_lines:
+                line.set_visible(False)
+            self.cursor_positions = [None, None]
+            self.cursors.set("")
+            self.canvas.draw_idle()
+            return
+
+        low, high = (self.ax.get_xlim() if mode == analysis.TIME
+                     else self.ax.get_ylim())
+        self.cursor_positions = list(analysis.default_cursor_positions(low, high))
+        self._redraw_cursors()
+
+    def _redraw_cursors(self) -> None:
+        horizontal = self.cursor_mode == analysis.VOLTAGE
+        for line, position in zip(self.cursor_lines, self.cursor_positions):
+            if position is None or self.cursor_mode == analysis.OFF:
+                line.set_visible(False)
+                continue
+            # axvline and axhline differ only in which pair of data the artist
+            # holds, so one artist can serve both by rewriting both.
+            if horizontal:
+                line.set_xdata([0.0, 1.0])
+                line.set_ydata([position, position])
+                line.set_transform(self.ax.get_yaxis_transform())
+            else:
+                line.set_xdata([position, position])
+                line.set_ydata([0.0, 1.0])
+                line.set_transform(self.ax.get_xaxis_transform())
+            line.set_visible(True)
+
+        self.cursors.set(self._cursor_text())
+        self.canvas.draw_idle()
+
+    def _cursor_text(self) -> str:
+        rows = analysis.cursor_readings(self.cursor_mode, *self.cursor_positions)
+        if not rows:
+            return ""
+        parts = [f"{label}={eng(value, unit) if value is not None else '--':>11}"
+                 for label, value, unit in rows]
+        return "Cursor  " + "  ".join(parts)
+
+    def _cursor_axis_value(self, event) -> Optional[float]:
+        if self.cursor_mode == analysis.TIME:
+            return event.xdata
+        if self.cursor_mode == analysis.VOLTAGE:
+            return event.ydata
+        return None
+
+    def _grab_cursor(self, event) -> Optional[int]:
+        value = self._cursor_axis_value(event)
+        if value is None:
+            return None
+        low, high = (self.ax.get_xlim() if self.cursor_mode == analysis.TIME
+                     else self.ax.get_ylim())
+        tolerance = abs(high - low) * GRAB_TOLERANCE
+        return analysis.nearest_cursor(self.cursor_positions, value, tolerance)
 
     # -------------------------------------------------------- level marker
 
@@ -190,6 +277,14 @@ class PlotCanvas:
     # ------------------------------------------------------------ gestures
 
     def _on_press(self, event) -> None:
+        # Cursors are local, so unlike the rest of the gestures they stay live
+        # while disconnected; check them before the enabled() gate.
+        if event.inaxes is self.ax and event.button == 1:
+            grabbed = self._grab_cursor(event)
+            if grabbed is not None:
+                self.dragging_cursor = grabbed
+                return
+
         if not self.enabled() or event.inaxes is not self.ax or event.button != 1:
             return
         if self._near_level(event):
@@ -201,6 +296,12 @@ class PlotCanvas:
             self._pan_start(event)
 
     def _on_motion(self, event) -> None:
+        if self.dragging_cursor is not None:
+            value = self._cursor_axis_value(event)
+            if value is not None:
+                self.cursor_positions[self.dragging_cursor] = value
+                self._redraw_cursors()
+            return
         if self.pan is not None:
             self._pan_move(event)
             return
@@ -216,6 +317,10 @@ class PlotCanvas:
                 pass
 
     def _on_release(self, event) -> None:
+        if self.dragging_cursor is not None:
+            # Nothing to commit: a cursor is a local measurement, not a setting.
+            self.dragging_cursor = None
+            return
         if self.pan is not None:
             self._pan_finish(event)
             return

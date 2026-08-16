@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from ultrascope import analysis
 from ultrascope.profile import DS1000E
 from ultrascope.waveform import Waveform, time_axis
 
@@ -115,3 +116,108 @@ def test_pan_moves_the_trace_with_the_cursor(canvas):
     _time_offset, ch, volt_offset = committed[0]
     assert ch == 1
     assert volt_offset < 0     # dragged up => offset decreases
+
+
+# --- measurement cursors ----------------------------------------------------
+
+def press(canvas, **kwargs):
+    return SimpleNamespace(inaxes=canvas.ax, button=1, dblclick=False,
+                           x=0, y=0, **kwargs)
+
+
+def test_cursors_start_off(canvas):
+    assert canvas.cursor_mode == analysis.OFF
+    assert not any(line.get_visible() for line in canvas.cursor_lines)
+
+
+def test_turning_cursors_on_places_them_inside_the_view(canvas):
+    canvas.show(wave_between(-1.0, 1.0))
+    canvas.set_cursor_mode(analysis.TIME)
+    low, high = canvas.ax.get_xlim()
+    assert all(low < p < high for p in canvas.cursor_positions)
+    assert all(line.get_visible() for line in canvas.cursor_lines)
+
+
+def test_turning_cursors_off_hides_and_clears_them(canvas):
+    canvas.show(wave_between(-1.0, 1.0))
+    canvas.set_cursor_mode(analysis.TIME)
+    canvas.set_cursor_mode(analysis.OFF)
+    assert canvas.cursor_positions == [None, None]
+    assert not any(line.get_visible() for line in canvas.cursor_lines)
+    assert canvas.cursors.get() == ""
+
+
+def test_the_readout_reports_the_gap_and_its_reciprocal(canvas):
+    canvas.show(wave_between(-1.0, 1.0))
+    canvas.set_cursor_mode(analysis.TIME)
+    canvas.cursor_positions = [0.0, 1e-3]
+    canvas._redraw_cursors()
+    text = canvas.cursors.get()
+    assert "dT=" in text and "1 ms" in text
+    assert "1 kHz" in text          # one cycle of a 1 kHz signal
+
+
+def test_voltage_cursors_report_volts_not_time(canvas):
+    canvas.show(wave_between(-1.0, 1.0))
+    canvas.set_cursor_mode(analysis.VOLTAGE)
+    canvas.cursor_positions = [-2.0, 2.0]
+    canvas._redraw_cursors()
+    text = canvas.cursors.get()
+    assert "dV=" in text and "4 V" in text
+    assert "dT" not in text
+
+
+def test_dragging_grabs_the_nearer_cursor(canvas):
+    canvas.show(wave_between(-3.0, 3.0))
+    canvas.set_cursor_mode(analysis.VOLTAGE)
+    canvas.cursor_positions = [-2.0, 2.0]
+    canvas._on_press(press(canvas, xdata=0.0, ydata=-1.98))
+    assert canvas.dragging_cursor == 0
+    canvas._on_motion(press(canvas, xdata=0.0, ydata=0.0))
+    assert canvas.cursor_positions[0] == pytest.approx(0.0)
+    canvas._on_release(press(canvas, xdata=0.0, ydata=0.0))
+    assert canvas.dragging_cursor is None
+
+
+def test_a_cursor_drag_commits_nothing_to_the_instrument(canvas):
+    # Cursors are a local measurement; they must never reach the scope.
+    canvas.show(wave_between(-1.0, 1.0))
+    canvas.set_cursor_mode(analysis.VOLTAGE)
+    canvas.cursor_positions = [-0.5, 0.5]
+    committed = []
+    canvas.on_level_commit = lambda *a: committed.append(a)
+    canvas.on_pan_commit = lambda *a: committed.append(a)
+    canvas.enabled = lambda: True
+
+    canvas._on_press(press(canvas, xdata=0.0, ydata=-0.5))
+    canvas._on_motion(press(canvas, xdata=0.0, ydata=0.2))
+    canvas._on_release(press(canvas, xdata=0.0, ydata=0.2))
+    assert committed == []
+
+
+def test_cursors_work_while_disconnected(canvas):
+    # enabled() is False, which gates the level marker and panning; grabbing a
+    # cursor must still work so an existing capture can be measured offline.
+    canvas.show(wave_between(-1.0, 1.0))
+    canvas.enabled = lambda: False
+    canvas.set_cursor_mode(analysis.VOLTAGE)
+    canvas.cursor_positions = [-0.5, 0.5]
+    canvas._on_press(press(canvas, xdata=0.0, ydata=-0.5))
+    assert canvas.dragging_cursor == 0
+
+
+def test_a_press_away_from_any_cursor_does_not_grab_one(canvas):
+    canvas.show(wave_between(-3.0, 3.0))
+    canvas.enabled = lambda: False
+    canvas.set_cursor_mode(analysis.VOLTAGE)
+    canvas.cursor_positions = [-2.0, 2.0]
+    canvas._on_press(press(canvas, xdata=0.0, ydata=0.0))
+    assert canvas.dragging_cursor is None
+
+
+def test_the_readout_refreshes_when_a_new_frame_arrives(canvas):
+    canvas.show(wave_between(-1.0, 1.0))
+    canvas.set_cursor_mode(analysis.TIME)
+    canvas.cursor_positions = [0.0, 2e-3]
+    canvas.show(wave_between(-1.0, 1.0))
+    assert "dT=" in canvas.cursors.get()

@@ -29,6 +29,30 @@ def test_parse_block_rejects_a_missing_header():
         parse_block(b"no header here")
 
 
+def test_parse_block_rejects_a_short_transfer():
+    # The instrument declares 1M bytes in RAW mode however deep the memory is,
+    # then stops sending. Slicing without this check made every dead transfer
+    # look like a successful small capture.
+    truncated = block(b"x" * 1000)[:200]
+    with pytest.raises(WaveformError, match="truncated"):
+        parse_block(truncated)
+
+
+def test_the_truncation_error_reports_both_lengths():
+    full = block(b"y" * 500)
+    header_len = len(full) - 500
+    with pytest.raises(WaveformError) as excinfo:
+        parse_block(full[:header_len + 105])
+    message = str(excinfo.value)
+    assert "500" in message          # declared
+    assert "105" in message          # arrived
+
+
+def test_an_exactly_complete_block_is_accepted():
+    payload = b"z" * 64
+    assert parse_block(block(payload)) == payload
+
+
 def test_centre_code_is_zero_volts_at_zero_offset():
     # Codes arrive inverted, so the on-the-wire byte for centre is 255 - 130.
     volts = decode(bytes([255 - 130]), DS1000E, volt_scale=1.0, volt_offset=0.0)

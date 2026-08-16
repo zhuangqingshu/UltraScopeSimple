@@ -24,12 +24,25 @@ def parse_block(raw: bytes) -> bytes:
     """Strip an IEEE 488.2 definite-length block header.
 
     Layout is '#' + one digit N + an N-digit byte count + the payload.
+
+    The declared length is checked against what actually arrived. Slicing
+    without that check truncates silently, and on this instrument that is not
+    hypothetical: in RAW mode it declares 1 M bytes whatever the memory depth
+    and then stops sending after ~12 K, so every short read would look exactly
+    like a successful small capture. The caller has no other way to tell "this
+    is all the data" from "the transfer died half way".
     """
     if raw[:1] != b"#":
         raise WaveformError(f"unexpected block header {raw[:12]!r}")
     ndigits = int(raw[1:2])
     header_len = 2 + ndigits
     length = int(raw[2:header_len])
+
+    available = len(raw) - header_len
+    if available < length:
+        raise WaveformError(
+            f"truncated block: header declares {length} bytes, "
+            f"only {available} arrived")
     return raw[header_len:header_len + length]
 
 

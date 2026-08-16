@@ -154,6 +154,14 @@ def test_a_malformed_block_is_reported_with_the_channel():
         scope.read_channel(1)
 
 
+def test_a_truncated_deep_read_fails_instead_of_returning_short_data():
+    # This is what a real RAW read does: 1M declared, a fraction delivered.
+    short = block(bytes(1_048_576))[:12_288]
+    scope, _ = make_scope(CAPTURE_RESPONSES, [short])
+    with pytest.raises(ScopeError, match="truncated"):
+        scope.read_channel(1, points="raw")
+
+
 # --- lifecycle -------------------------------------------------------------
 
 def test_close_hands_the_front_panel_back():

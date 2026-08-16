@@ -10,6 +10,7 @@ import tkinter as tk
 from tkinter import ttk
 from typing import Callable, Optional, Sequence
 
+from .. import analysis
 from . import state as st
 
 # The CLI's --trigger-timeout default; kept in step with cli.py.
@@ -280,6 +281,26 @@ class ExportPanel(Panel):
             .grid(row=0, column=1, sticky="ew")
         ttk.Button(box, text="Deep memory capture (RAW)", command=on_deep)\
             .grid(row=1, column=0, columnspan=2, sticky="ew", pady=(3, 0))
+
+
+class CursorPanel(Panel):
+    """Local measurement cursors.
+
+    These never reach the instrument, so unlike every other panel this one
+    stays usable while disconnected -- you can measure a capture you already
+    have on screen.
+    """
+
+    title = "Cursors"
+
+    def __init__(self, parent, on_mode_change):
+        super().__init__(parent)
+        self.mode = tk.StringVar(value=analysis.OFF)
+        for column, mode in enumerate(analysis.CURSOR_MODES):
+            ttk.Radiobutton(self.frame, text=mode.capitalize(), value=mode,
+                            variable=self.mode, command=on_mode_change)                .grid(row=0, column=column, sticky="w", padx=(0, 6))
+        ttk.Label(self.frame, text="drag the dotted lines on the plot",
+                  foreground="#777", font=("", 8))            .grid(row=1, column=0, columnspan=3, sticky="w", pady=(2, 0))
 
 
 class SetupPanel(Panel):
