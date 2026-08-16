@@ -16,9 +16,9 @@ Layering is strictly one-directional: `cli.py`/`gui/` → `scope.py` → `wavefo
 - `transport.py` — the only module importing pyvisa in the capture path (`discovery.py` also does, to enumerate resources; `tests/test_layering.py` enforces the rest). `Transport` protocol + `PyVisaTransport` + `FakeTransport`. Timeouts change via the `timeout(ms)` context manager.
 - `profile.py` — `DeviceProfile` holds every per-model hardware fact, including the PULSE/SLOPE condition specs. New model = new profile, not edits to the decode path.
 - `waveform.py` — pure `parse_block` / `decode` / `time_axis` + the `Waveform` value object. `parse_block` rejects short transfers rather than truncating.
-- `analysis.py` — local measurement over a `Waveform` (cursors, sampling, FFT, trace parameters). No SCPI, so it works while disconnected.
+- `analysis.py` — local measurement over a `Waveform` (cursors, sampling, FFT, trace parameters, channel maths, XY). No SCPI, so it works while disconnected. Channel maths is local by choice, not via `:MATH:OPER`.
 - `scope.py` — `Scope` SCPI facade; `Scope.connect()` convenience constructor; `snapshot()` → `ScopeSettings`.
-- `gui/` — `worker.py` / `state.py` / `panels.py` / `plot.py` / `app.py`.
+- `gui/` — `worker.py` / `state.py` / `panels.py` / `plot.py` / `app.py`. Works with no instrument: Open CSV sets `last_capture` and every analysis panel reads only that. Panels that must stay live while disconnected are listed in `App.ALWAYS_ENABLED`.
 
 ### Invariants
 

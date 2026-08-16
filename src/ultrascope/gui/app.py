@@ -18,10 +18,10 @@ from . import state as st
 from ..setup_file import load_setup, save_setup
 from ..units import eng
 from .panels import (AcquisitionPanel, ChannelPanel, ConnectionPanel,
-                     CursorPanel, ExportPanel, HorizontalPanel,
+                     CursorPanel, FilePanel, HorizontalPanel, MathPanel,
                      MeasurePanel, PersistencePanel, ReferencePanel,
-                     SetupPanel, SpectrumPanel, TriggerPanel)
-from .plot import SPECTRUM_DOMAIN, TIME_DOMAIN, PlotCanvas
+                     SetupPanel, TriggerPanel, ViewPanel)
+from .plot import SPECTRUM_DOMAIN, TIME_DOMAIN, XY_DOMAIN, PlotCanvas
 from .worker import Worker
 
 REFRESH_MS = 40           # how often the UI drains the result queue
@@ -77,11 +77,12 @@ class App(ttk.Frame):
                                           self._apply_timebase)
         self.trigger = TriggerPanel(panel, self._apply_trigger_mode,
                                     self._apply_trigger, self._level_50)
-        self.export_panel = ExportPanel(panel, self._save_csv, self._save_png,
-                                        self._deep_capture)
+        self.file_panel = FilePanel(panel, self._open_capture, self._save_csv,
+                                    self._save_png, self._deep_capture)
         self.setup_panel = SetupPanel(panel, self._save_setup, self._load_setup)
         self.cursor_panel = CursorPanel(panel, self._apply_cursor_mode)
-        self.spectrum_panel = SpectrumPanel(panel, self._apply_spectrum)
+        self.view_panel = ViewPanel(panel, self._apply_view)
+        self.math_panel = MathPanel(panel, self._apply_math)
         self.measure_panel = MeasurePanel(panel, self._apply_measure_source)
         self.reference_panel = ReferencePanel(
             panel, self._store_reference, self._load_reference,
@@ -91,8 +92,8 @@ class App(ttk.Frame):
 
         self.panels = [self.connection, self.acquisition,
                        *self.channels.values(), self.horizontal,
-                       self.trigger, self.export_panel, self.setup_panel,
-                       self.cursor_panel, self.spectrum_panel,
+                       self.trigger, self.file_panel, self.setup_panel,
+                       self.cursor_panel, self.view_panel, self.math_panel,
                        self.measure_panel, self.reference_panel,
                        self.persistence_panel]
         for row, item in enumerate(self.panels):
@@ -114,12 +115,18 @@ class App(ttk.Frame):
         self.plot.enabled = lambda: self.connected
 
     # Panels that do not talk to the instrument stay live while disconnected.
-    ALWAYS_ENABLED = ("connection", "cursor_panel", "spectrum_panel",
-                      "measure_panel", "reference_panel",
+    # Everything downstream of a capture belongs here: with a waveform loaded
+    # from a file there is nothing an analysis panel needs a connection for.
+    ALWAYS_ENABLED = ("connection", "cursor_panel", "view_panel",
+                      "math_panel", "measure_panel", "reference_panel",
                       "persistence_panel")
 
     def _set_enabled(self, on: bool) -> None:
-        """Everything that needs a connection follows the connection state."""
+        """Everything that needs a connection follows the connection state.
+
+        FilePanel is not listed as always-enabled but gates itself: opening and
+        saving files work offline, only the deep-memory read does not.
+        """
         always = {getattr(self, name) for name in self.ALWAYS_ENABLED}
         for item in self.panels:
             if item not in always:
@@ -410,17 +417,32 @@ class App(ttk.Frame):
 
     def _apply_measure_source(self) -> None:
         if self.measure_panel.is_local():
-            self.plot.show_local_measurements(
-                self.last_capture, self.measure_panel.channel_number())
+            self._show_local_readings(self.last_capture)
         else:
             self.plot.measurements.set("")
 
-    def _apply_spectrum(self) -> None:
-        showing = self.spectrum_panel.showing()
-        self.plot.set_domain(SPECTRUM_DOMAIN if showing else TIME_DOMAIN,
-                             window=self.spectrum_panel.window.get())
+    def _show_local_readings(self, wave) -> None:
+        if self.measure_panel.is_math():
+            self.plot.show_math_measurements(wave)
+        else:
+            self.plot.show_local_measurements(
+                wave, self.measure_panel.channel_number())
+
+    # A view name from the panel maps to a canvas domain.
+    DOMAIN_FOR_VIEW = {ViewPanel.TIME: TIME_DOMAIN,
+                       ViewPanel.SPECTRUM: SPECTRUM_DOMAIN,
+                       ViewPanel.XY: XY_DOMAIN}
+
+    def _apply_view(self) -> None:
+        domain = self.DOMAIN_FOR_VIEW.get(self.view_panel.showing(), TIME_DOMAIN)
+        self.plot.set_domain(domain, window=self.view_panel.window.get())
         # Redraw straight away from the capture already on screen, so the view
         # does not stay blank until the next live frame.
+        if self.last_capture is not None:
+            self._draw(self.last_capture)
+
+    def _apply_math(self) -> None:
+        self.plot.set_math(self.math_panel.operation())
         if self.last_capture is not None:
             self._draw(self.last_capture)
 
@@ -458,14 +480,18 @@ class App(ttk.Frame):
 
     def _on_trace(self, wave) -> None:
         self.last_capture = wave
+        # Whatever was on screen is no longer the loaded file.
+        self.file_panel.source.set("")
         self._draw(wave)
 
     def _draw(self, wave) -> None:
         if self.measure_panel.is_local():
-            self.plot.show_local_measurements(
-                wave, self.measure_panel.channel_number())
-        if self.spectrum_panel.showing():
-            self.plot.show_spectrum(wave, self.spectrum_panel.channel_number())
+            self._show_local_readings(wave)
+        view = self.view_panel.showing()
+        if view == ViewPanel.SPECTRUM:
+            self.plot.show_spectrum(wave, self.view_panel.channel_number())
+        elif view == ViewPanel.XY:
+            self.plot.show_xy(wave, *self.view_panel.xy_channels())
         else:
             self.plot.show(wave)
 
@@ -485,6 +511,32 @@ class App(ttk.Frame):
         pass
 
     # ---------------------------------------------------------------- export
+
+    def _open_capture(self) -> None:
+        """Load a CSV written earlier and treat it as the current capture.
+
+        Everything downstream reads ``last_capture``, so once it is loaded the
+        cursors, spectrum, XY, math and local measurements all apply to the
+        archived waveform with no further plumbing. Live capture is paused
+        first, or the next frame would overwrite the file a moment later.
+        """
+        path = filedialog.askopenfilename(filetypes=[("Waveform CSV", "*.csv"),
+                                                     ("All files", "*.*")])
+        if not path:
+            return
+        try:
+            wave = export.load_csv(path)
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("Cannot read waveform", str(exc))
+            return
+
+        self._pause_live()
+        self.plot.clear_persistence()
+        self._on_trace(wave)
+        # After _on_trace: a capture arriving from the instrument clears this
+        # label, and the load is the one case where it should stay.
+        self.file_panel.source.set(f"showing: {path}")
+        self.status.set(f"Loaded {wave.npoints} points from {path}")
 
     def _ask_path(self, extension: str, label: str):
         if self.last_capture is None:

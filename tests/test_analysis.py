@@ -417,3 +417,102 @@ def test_every_reading_carries_a_label_and_a_unit():
     for key, (label, _value, unit) in measurements(wave, 1).items():
         assert label == key
         assert unit in ("V", "s", "Hz", "%")
+
+
+# --- maths between channels -------------------------------------------------
+
+from ultrascope.analysis import (MATH_OFF, MATH_OPS, math_trace,  # noqa: E402
+                                 math_unit, measurements_of, xy_pairs)
+
+
+def two_channel(npoints=600, timebase=1e-3):
+    t = time_axis(npoints, timebase, 0.0, DS1000E)
+    return Waveform(t=t,
+                    channels={1: np.sin(2 * np.pi * 1000 * t),
+                              2: np.cos(2 * np.pi * 1000 * t)},
+                    timebase=timebase, time_offset=0.0)
+
+
+@pytest.mark.parametrize("op, expected", [
+    ("CH1+CH2", lambda a, b: a + b),
+    ("CH1-CH2", lambda a, b: a - b),
+    ("CH1*CH2", lambda a, b: a * b),
+])
+def test_each_operation_combines_the_two_channels(op, expected):
+    wave = two_channel()
+    a, b = wave.channels[1], wave.channels[2]
+    assert math_trace(wave, op) == pytest.approx(expected(a, b))
+
+
+def test_off_produces_no_trace():
+    assert math_trace(two_channel(), MATH_OFF) is None
+
+
+def test_a_single_channel_capture_has_no_math_trace():
+    # Rather than raising: switching channels off mid-session is ordinary, and
+    # the caller's answer is simply "nothing to draw".
+    t = time_axis(64, 1e-3, 0.0, DS1000E)
+    wave = Waveform(t=t, channels={1: np.zeros(64)}, timebase=1e-3,
+                    time_offset=0.0)
+    assert all(math_trace(wave, op) is None for op in MATH_OPS)
+
+
+def test_an_unknown_operation_is_rejected():
+    with pytest.raises(ValueError, match="unknown math operation"):
+        math_trace(two_channel(), "CH1/CH2")
+
+
+def test_a_product_of_two_voltages_is_not_in_volts():
+    assert math_unit("CH1*CH2") == "V²"
+    assert math_unit("CH1+CH2") == "V"
+
+
+def test_the_product_of_sine_and_cosine_is_a_double_frequency_half_amplitude():
+    # sin(x)cos(x) = sin(2x)/2 -- an independent check that the maths lands on
+    # the samples rather than merely returning an array of the right shape.
+    wave = two_channel()
+    rows = measurements_of(wave.t, math_trace(wave, "CH1*CH2"), "V²")
+    assert rows["Freq"][1] == pytest.approx(2000.0, rel=1e-3)
+    # Peak to peak of sin(2x)/2 is 1. Vamp reads a shade under, because the
+    # histogram levels sit just inside the peaks of a sinusoid -- Vpp is the
+    # extremes and is the one to check exactly here.
+    assert rows["Vpp"][1] == pytest.approx(1.0, rel=1e-3)
+
+
+def test_measurement_rows_carry_the_unit_they_were_given():
+    wave = two_channel()
+    rows = measurements_of(wave.t, math_trace(wave, "CH1*CH2"), "V²")
+    assert rows["Vpp"][2] == "V²"
+    assert rows["Freq"][2] == "Hz"      # a frequency is a frequency regardless
+
+
+def test_measurements_over_a_channel_still_report_volts():
+    rows = measurements(two_channel(), 1)
+    assert rows["Vpp"][2] == "V"
+
+
+# --- XY ---------------------------------------------------------------------
+
+def test_xy_returns_the_two_channels_point_for_point():
+    wave = two_channel()
+    x, y = xy_pairs(wave, 1, 2)
+    assert x is wave.channels[1] and y is wave.channels[2]
+
+
+def test_quadrature_traces_trace_a_circle():
+    # sin against cos is the unit circle; every point sits on radius 1. This is
+    # the property that makes XY worth having: a phase relationship is a shape.
+    x, y = xy_pairs(two_channel(), 1, 2)
+    assert np.hypot(x, y) == pytest.approx(np.ones(len(x)), abs=1e-9)
+
+
+def test_xy_against_a_missing_channel_is_none():
+    wave = two_channel()
+    assert xy_pairs(wave, 1, 3) is None
+
+
+def test_xy_of_a_channel_against_itself_is_allowed():
+    # Degenerate but not an error: it draws the 45-degree line, which is a
+    # perfectly good way to confirm the axes are what you think they are.
+    x, y = xy_pairs(two_channel(), 1, 1)
+    assert x is y

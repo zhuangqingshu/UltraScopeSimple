@@ -436,3 +436,133 @@ def test_the_trail_is_dropped_when_the_spectrum_opens(canvas):
         canvas.show(wave_between(-1.0, 1.0))
     canvas.set_domain(SPECTRUM_DOMAIN)
     assert len(canvas.persistence_lines) == 0
+
+
+# --- math overlay and the XY view -------------------------------------------
+
+from ultrascope import analysis as an  # noqa: E402
+from ultrascope.gui.plot import XY_DOMAIN  # noqa: E402
+
+
+def quadrature(npoints=200, amplitude=1.0):
+    t = time_axis(npoints, 1e-3, 0.0, DS1000E)
+    return Waveform(t=t,
+                    channels={1: amplitude * np.sin(2 * np.pi * 1000 * t),
+                              2: amplitude * np.cos(2 * np.pi * 1000 * t)},
+                    timebase=1e-3, time_offset=0.0)
+
+
+def test_the_math_trace_is_hidden_until_an_operation_is_chosen(canvas):
+    canvas.show(quadrature())
+    assert not canvas.math_line.get_visible()
+
+
+def test_choosing_an_operation_draws_it_on_the_next_frame(canvas):
+    canvas.set_math("CH1+CH2")
+    canvas.show(quadrature())
+    assert canvas.math_line.get_visible()
+    assert canvas.math_line.get_ydata() == pytest.approx(
+        quadrature().channels[1] + quadrature().channels[2])
+
+
+def test_the_legend_entry_names_the_unit(canvas):
+    # The y axis is in volts and a product of two voltages is not, so the label
+    # is the only thing keeping the plot honest.
+    canvas.set_math("CH1*CH2")
+    canvas.show(quadrature())
+    assert canvas.math_line.get_label() == "CH1*CH2 (V\u00b2)"
+
+
+def test_a_capture_missing_an_operand_hides_the_stale_math_trace(canvas):
+    canvas.set_math("CH1-CH2")
+    canvas.show(quadrature())
+    assert canvas.math_line.get_visible()
+
+    t = time_axis(200, 1e-3, 0.0, DS1000E)
+    canvas.show(Waveform(t=t, channels={1: np.zeros(200)}, timebase=1e-3,
+                         time_offset=0.0))
+    # Leaving the previous difference on screen would read as a current one.
+    assert not canvas.math_line.get_visible()
+
+
+def test_the_vertical_window_frames_the_math_trace(canvas):
+    # CH1+CH2 of two 3 V traces reaches beyond either of them; a math trace
+    # drawn off-screen is worse than no math trace.
+    canvas.set_math("CH1+CH2")
+    wave = quadrature(amplitude=3.0)
+    canvas.show(wave)
+    low, high = canvas.y_limits(wave)
+    values = wave.channels[1] + wave.channels[2]
+    assert low < float(np.min(values))
+    assert high > float(np.max(values))
+
+
+def test_switching_off_hides_the_math_trace(canvas):
+    canvas.set_math("CH1+CH2")
+    canvas.show(quadrature())
+    canvas.set_math(an.MATH_OFF)
+    assert not canvas.math_line.get_visible()
+
+
+def test_the_xy_view_plots_one_channel_against_the_other(canvas):
+    wave = quadrature()
+    canvas.set_domain(XY_DOMAIN)
+    canvas.show_xy(wave, 1, 2)
+    assert canvas.xy_line.get_visible()
+    assert canvas.xy_line.get_xdata() == pytest.approx(wave.channels[1])
+    assert canvas.xy_line.get_ydata() == pytest.approx(wave.channels[2])
+
+
+def test_the_xy_axes_are_labelled_with_their_channels(canvas):
+    canvas.set_domain(XY_DOMAIN)
+    canvas.show_xy(quadrature(), 2, 1)
+    assert canvas.ax.get_xlabel() == "CH2 (V)"
+    assert canvas.ax.get_ylabel() == "CH1 (V)"
+
+
+def test_xy_says_so_when_a_channel_is_missing(canvas):
+    t = time_axis(50, 1e-3, 0.0, DS1000E)
+    one = Waveform(t=t, channels={1: np.zeros(50)}, timebase=1e-3,
+                   time_offset=0.0)
+    canvas.set_domain(XY_DOMAIN)
+    canvas.show_xy(one, 1, 2)
+    assert not canvas.xy_line.get_visible()
+    assert "needs both" in canvas.spectrum_readout.get()
+
+
+def test_the_time_domain_artists_step_aside_for_the_xy_view(canvas):
+    canvas.set_math("CH1+CH2")
+    canvas.show(quadrature())
+    canvas.set_domain(XY_DOMAIN)
+    canvas.show_xy(quadrature(), 1, 2)
+    assert not canvas.lines[1].get_visible()
+    assert not canvas.math_line.get_visible()
+    assert not canvas.spectrum_line.get_visible()
+    assert canvas.xy_line.get_visible()
+
+
+def test_returning_to_the_time_view_restores_them(canvas):
+    canvas.set_math("CH1+CH2")
+    canvas.show(quadrature())
+    canvas.set_domain(XY_DOMAIN)
+    canvas.set_domain(TIME_DOMAIN)
+    assert canvas.lines[1].get_visible()
+    assert canvas.math_line.get_visible()
+    assert not canvas.xy_line.get_visible()
+
+
+def test_gestures_are_inert_in_the_xy_view(canvas):
+    # Volts against volts: dragging it would map onto nothing sensible, and the
+    # trigger level marker measures a quantity the view does not show.
+    canvas.enabled = lambda: True
+    canvas.show(quadrature())
+    canvas.set_domain(XY_DOMAIN)
+    canvas._on_press(SimpleNamespace(inaxes=canvas.ax, button=1, dblclick=False,
+                                     xdata=0.0, ydata=0.0, x=10, y=10))
+    assert canvas.pan is None
+    assert not canvas.dragging_level
+
+
+def test_an_unknown_view_is_rejected(canvas):
+    with pytest.raises(ValueError, match="unknown domain"):
+        canvas.set_domain("waterfall")

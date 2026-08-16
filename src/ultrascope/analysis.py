@@ -240,18 +240,30 @@ def measurements(wave: Waveform, channel: int) -> Dict[str, Reading]:
     few sample intervals cannot be measured this way -- ask the scope instead.
     """
     volts = wave.channels.get(channel)
-    if volts is None or len(volts) < 2:
+    if volts is None:
+        return {}
+    return measurements_of(wave.t, volts)
+
+
+def measurements_of(t: np.ndarray, volts: np.ndarray,
+                    unit: str = "V") -> Dict[str, Reading]:
+    """The same parameters over any trace, not just a captured channel.
+
+    Split out so a computed trace -- a math result, say -- can be measured with
+    the identical code rather than a parallel copy of it. ``unit`` carries
+    through to the voltage rows, because CH1*CH2 is not in volts.
+    """
+    if volts is None or len(volts) < 2 or len(t) != len(volts):
         return {}
 
     lvl = levels(volts)
-    t = wave.t
     rows: Dict[str, Reading] = {
-        "Vtop": ("Vtop", lvl.top, "V"),
-        "Vbase": ("Vbase", lvl.base, "V"),
-        "Vamp": ("Vamp", lvl.amplitude, "V"),
-        "Vpp": ("Vpp", lvl.maximum - lvl.minimum, "V"),
-        "Vavg": ("Vavg", float(np.mean(volts)), "V"),
-        "Vrms": ("Vrms", float(np.sqrt(np.mean(np.square(volts)))), "V"),
+        "Vtop": ("Vtop", lvl.top, unit),
+        "Vbase": ("Vbase", lvl.base, unit),
+        "Vamp": ("Vamp", lvl.amplitude, unit),
+        "Vpp": ("Vpp", lvl.maximum - lvl.minimum, unit),
+        "Vavg": ("Vavg", float(np.mean(volts)), unit),
+        "Vrms": ("Vrms", float(np.sqrt(np.mean(np.square(volts)))), unit),
     }
 
     rise = _first_edge_time(t, volts, lvl, rising=True)
@@ -291,6 +303,67 @@ def _first_pulse(starts: Sequence[float],
         if later:
             return later[0] - start
     return None
+
+
+# --- maths between channels -------------------------------------------------
+
+MATH_OFF = "off"
+# Kept as display strings because that is also what the combobox shows; the
+# operand channels are read out of the name rather than passed separately.
+MATH_OPS = ("CH1+CH2", "CH1-CH2", "CH1*CH2")
+
+# Products of two voltages are not voltages. Saying so matters on a plot whose
+# other traces are in volts.
+MATH_UNITS = {"CH1+CH2": "V", "CH1-CH2": "V", "CH1*CH2": "V²"}
+
+
+def math_trace(wave: Waveform, op: str) -> Optional[np.ndarray]:
+    """Combine two channels arithmetically.
+
+    Done here rather than through ``:MATH:OPER`` for two reasons: both traces
+    are already in hand so numpy is more flexible than the instrument's three
+    fixed operations, and it costs no SCPI command whose spelling would need
+    verifying. It also works on a capture loaded from a file.
+
+    Returns None when the capture does not hold both operands.
+    """
+    if op in (None, "", MATH_OFF):
+        return None
+    if op not in MATH_UNITS:
+        raise ValueError(f"unknown math operation {op!r}; expected one of {list(MATH_OPS)}")
+
+    a = wave.channels.get(1)
+    b = wave.channels.get(2)
+    if a is None or b is None or len(a) != len(b):
+        return None
+
+    if op == "CH1+CH2":
+        return a + b
+    if op == "CH1-CH2":
+        return a - b
+    return a * b
+
+
+def math_unit(op: str) -> str:
+    return MATH_UNITS.get(op, "V")
+
+
+# --- XY (Lissajous) ---------------------------------------------------------
+
+
+def xy_pairs(wave: Waveform, x_channel: int,
+             y_channel: int) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+    """One channel plotted against another, with time as the implicit parameter.
+
+    Phase differences and I/V curves are obvious this way and nearly invisible
+    on two time-domain traces. Both channels share the capture's time axis, so
+    the samples already correspond point for point -- no resampling needed.
+    """
+    x = wave.channels.get(x_channel)
+    y = wave.channels.get(y_channel)
+    if x is None or y is None or len(x) != len(y) or len(x) == 0:
+        return None
+    return x, y
 
 
 def cursor_readings(mode: str, a: Optional[float],

@@ -365,9 +365,32 @@ pyvisa，而三处文档都写着"transport.py 是唯一"。
 ### 持续集成
 
 `.github/workflows/test.yml`：push 与 PR 触发，Python 3.8 / 3.10 / 3.12（Linux）与
-3.12（Windows）各跑一遍全部 325 项测试。Linux 侧经 `xvfb-run` 提供虚拟显示，并设
+3.12（Windows）各跑一遍全部测试。Linux 侧经 `xvfb-run` 提供虚拟显示，并设
 `ULTRASCOPE_REQUIRE_TK=1` 把"没有显示就跳过"变成硬失败——否则 Tk 或 xvfb 坏掉时
 GUI 覆盖会静默消失而 CI 仍是绿的。另有 `minimal` job 只装核心依赖，验证 matplotlib
 确实是可选的。
 
 CI 机器上没有示波器，所以它守的是回归，**消不掉上面任何一条真机待验项**。
+
+### 离线分析
+
+`analysis.py` 一直是纯函数，但入口只有"当前采集"这一个来源。补上 `export.load_csv()`
+到 GUI 的 Capture file 面板与 CLI 的 `--open` 之后，同一批分析能力对存档波形一样成立：
+
+- GUI：Open CSV 写 `last_capture`，下游（光标 / 频谱 / XY / Math / 本地测量）只读它，
+  因此无需任何额外接线。`App.ALWAYS_ENABLED` 列出不随连接状态禁用的面板；
+  `FilePanel` 不在其中而是自己 gate 那一个深存储按钮，因为只有它需要仪器
+- CLI：`--open` 分支在构造 `Scope` 之前就返回，一次 VISA 调用都没有。
+  与之矛盾的选项（`--timebase`、`--single` 等，列在 `INSTRUMENT_ONLY`）**报错而非忽略**
+
+同期加入的两项也走这条路，都是本地计算：
+
+- **通道运算** `analysis.math_trace()`。刻意不用 `:MATH:OPER`——数据已经在手里，numpy
+  更灵活，而且不引入需要 Programming Guide 核对的命令拼写。乘积单位是 V² 而非 V，
+  故 `measurements_of()` 接受 unit 参数，图例也标出单位：纵轴是伏特，同一根轴上混量纲
+  不标就不老实
+- **XY** `analysis.xy_pairs()`。两个通道共用采集的时间轴，样本天然逐点对应，不需重采样
+
+时域 / 频谱 / XY 三个视图共用一个 axes 对象，只切换 artist。这样每个鼠标处理器始终挂在
+同一个 axes 上（`_on_press` 等只需判断 `self.domain`），切换是瞬时的，代价是每次要重设
+轴标签。GUI 里三者合并为一个 View 下拉框而非三个勾选框——它们本来就互斥。

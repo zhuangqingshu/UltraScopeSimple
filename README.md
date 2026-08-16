@@ -27,7 +27,7 @@ src/ultrascope/
   scope.py       Scope —— SCPI 指令门面
   export.py      CSV / PNG 落盘，以及 CSV 读回
   setup_file.py  配置文件读写
-  analysis.py    本地分析：光标读数、插值取样、FFT 频谱、参数测量
+  analysis.py    本地分析：光标读数、插值取样、FFT 频谱、参数测量、通道运算、XY
   units.py       eng() 显示格式化、scpi_number() 下发格式化
   cli.py         命令行工具
   gui/           Tkinter 界面（worker / state / panels / plot / app）
@@ -53,15 +53,31 @@ ultrascope-gui
   在图上拖动可平移时基与垂直位移（作用于 Active 选中的通道）
 - **Cursors**：Off / Time / Voltage 三档。图上拖动绿色虚线，读出两根光标位置与
   ΔT（附 1/ΔT，直接读频率）或 ΔV。**纯本地计算，不走 SCPI，断开连接也能测已有波形**
-- **Spectrum (FFT)**：勾选后波形区切换为频谱，可选窗函数（矩形/汉宁/海明/布莱克曼）与通道，
-  纵轴 dBV，读数给出峰值频率与幅度、频率分辨率、等效采样率。同样是本地计算，断开也能用
+- **View**：波形区在三种视图间切换，三者互斥所以是一个下拉框
+  - *Time*——常规时域
+  - *Spectrum (FFT)*——可选窗函数（矩形/汉宁/海明/布莱克曼）与通道，纵轴 dBV，
+    读数给出峰值频率与幅度、频率分辨率、等效采样率
+  - *XY (CH1 vs CH2)*——一个通道对另一个通道作图，时间成为隐含参量。看相位差、
+    李萨如图、I/V 曲线用，两条时域波形上几乎看不出来的关系在这里是个形状
+- **Math**：CH1+CH2 / CH1−CH2 / CH1×CH2，以粉色实线叠加在时域视图上。
+  **用 numpy 本地算，不走 `:MATH:OPER`**——更灵活，且不引入需要核实的 SCPI 拼写。
+  乘积的单位是 V² 而非 V，图例里会标出来（纵轴是伏特，不标就不老实了）
 - **Measurements**：读数来源在「From scope」（仪器自动测量，更准，需连接）与「Local」
-  （本地按采样点算 15 项：电平、上升/下降时间、周期/频率、脉宽、占空比、过冲）之间切换
+  （本地按采样点算 15 项：电平、上升/下降时间、周期/频率、脉宽、占空比、过冲）之间切换。
+  Channel 选 MATH 则测量上面那条运算波形，用的是同一套代码
 - **Reference**：Store current 把当前波形存为基准，以蓝色虚线叠加对比"改动前后"；
   Load CSV 可载入之前导出的波形作基准，因此基准能跨会话保留
 - **Persistence**：0–32 帧余辉，残影按新旧渐隐，用来暴露抖动与偶发异常
 - **Setup**：保存/加载完整配置（JSON），与 CLI 的 `--save-setup` / `--load-setup` 通用
-- **Export**：保存 CSV / PNG，Deep memory capture 读取深存储（见下方「已知限制」）
+- **Capture file**：Open CSV 把存档波形当作当前波形载入，Save CSV / PNG 落盘，
+  Deep memory capture 读取深存储（见下方「已知限制」）。
+  只有深存储那一个按钮需要连接，其余离线可用
+
+### 断开示波器也能用
+
+Open CSV 载入之前导出的波形后，光标、FFT、XY、Math 与本地测量全部照常工作——
+这些都是对采样点的本地计算，与仪器无关。所以可以昨天在实验台上采数据，今天在别的机器上分析。
+需要连接的只有采集本身与仪器自身的测量读数。
 
 所有仪器 I/O 由单一工作线程串行执行，Tk 主线程只操作控件。
 
@@ -89,6 +105,9 @@ ultrascope-dump --trigger-mode pulse --trigger-condition "+Width <" --trigger-wi
 # 保存当前配置，之后随时还原
 ultrascope-dump --save-setup bench.json
 ultrascope-dump --load-setup bench.json
+
+# 分析之前存下的波形：本地测量 + FFT 峰值 + 通道乘积，全程不连仪器
+ultrascope-dump --open waveform.csv --measure --spectrum --math "CH1*CH2"
 ```
 
 未安装到 PATH 时可以用 `python -m ultrascope.cli` 与 `python -m ultrascope.gui` 代替。
@@ -112,8 +131,16 @@ ultrascope-dump --load-setup bench.json
 | `--trigger-width` | 脉宽或斜率时间，20 ns–10 s（仅 PULSE/SLOPE 模式） |
 | `--save-setup` | 把当前完整状态写成 JSON 后退出 |
 | `--load-setup` | 先套用 JSON 配置，再应用其他选项 |
+| `--open` | 读取之前导出的 CSV 做分析，**全程不连仪器** |
+| `--spectrum` | 打印各通道 FFT 峰值、频率分辨率与等效采样率 |
+| `--window` | `--spectrum` 用的窗函数，默认 hann |
+| `--math` | 通道运算 `CH1+CH2` / `CH1-CH2` / `CH1*CH2`，打印其参数测量 |
 
 **未传的参数一律不下发**，示波器保持面板上的现状——可以安全地在手工调好的设置上直接跑。
+
+`--spectrum` 与 `--math` 都是对已到手的采样点做本地计算，因此接着仪器和 `--open`
+读文件两种情况下都可用。`--open` 会**拒绝**与之矛盾的选项（`--timebase`、`--single`
+等）而不是默默忽略，免得让人以为某个设置下发到了一台根本没连上的仪器。
 
 ## 作为库使用
 
@@ -130,6 +157,11 @@ wave = load_csv("out.csv")
 for label, value, unit in analysis.measurements(wave, 1).values():
     print(label, value, unit)
 print(analysis.spectrum(wave, 1).peak())
+
+# 通道运算与 XY 也是纯函数
+diff = analysis.math_trace(wave, "CH1-CH2")
+print(analysis.measurements_of(wave.t, diff)["Vpp"])
+x, y = analysis.xy_pairs(wave, 1, 2)
 ```
 
 ## 数据格式

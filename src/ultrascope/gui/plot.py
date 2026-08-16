@@ -35,16 +35,36 @@ SCROLL_STEP_DIV = 0.2
 
 TIME_DOMAIN = "time"
 SPECTRUM_DOMAIN = "spectrum"
+XY_DOMAIN = "xy"
+DOMAINS = (TIME_DOMAIN, SPECTRUM_DOMAIN, XY_DOMAIN)
 # How much of the spectrum to show below the strongest bin, and how much air
 # to leave above it.
 SPECTRUM_DB_RANGE = 100.0
 SPECTRUM_DB_HEADROOM = 10.0
+
+MATH_COLOUR = "#ff66cc"
+XY_COLOUR = "#66ff99"
+# Padding around the XY figure, as a fraction of each axis' extent.
+XY_MARGIN = 0.1
 
 # Reference overlay and persistence.
 REFERENCE_COLOUR = "#8888ff"
 MAX_PERSISTENCE = 32
 # Oldest surviving frame is drawn at this alpha; newer ones fade up to 1.
 FAINTEST_ALPHA = 0.08
+
+
+def _padded(values):
+    """An axis range around some data, with room to breathe.
+
+    A flat trace has no extent of its own, so it gets a fixed window instead of
+    a zero-width one that matplotlib would silently widen for itself.
+    """
+    low, high = float(np.min(values)), float(np.max(values))
+    if high <= low:
+        return low - FLAT_TRACE_HALF_SPAN, high + FLAT_TRACE_HALF_SPAN
+    pad = (high - low) * XY_MARGIN
+    return low - pad, high + pad
 
 
 class PlotCanvas:
@@ -107,6 +127,20 @@ class PlotCanvas:
                                              linewidth=1.0, visible=False)
         self.spectrum_window = analysis.DEFAULT_WINDOW
 
+        # XY view: one channel against the other, time implicit. Drawn on the
+        # same axes for the same reason as the spectrum -- switching back is
+        # instant and the gestures stay attached to a single axes object.
+        (self.xy_line,) = self.ax.plot([], [], color=XY_COLOUR, linewidth=1.0,
+                                       visible=False)
+        self.xy_channels = (1, 2)
+
+        # A trace computed from the two channels. Local arithmetic, not
+        # :MATH:OPER, so it costs no SCPI and works on a loaded file.
+        self.math_op = analysis.MATH_OFF
+        (self.math_line,) = self.ax.plot([], [], color=MATH_COLOUR,
+                                         linewidth=1.0, linestyle="-",
+                                         visible=False)
+
         # A stored trace to compare against, and a trail of recent frames.
         # Both are view-only: neither is ever sent anywhere.
         self.reference = None
@@ -162,6 +196,8 @@ class PlotCanvas:
             if ch not in wave.channels:
                 line.set_visible(False)
 
+        self._draw_math(wave)
+
         if self.pan is None:   # a drag in progress owns the view; don't fight it
             self.ax.set_xlim(wave.t[0], wave.t[-1])
             self.ax.set_ylim(*self.y_limits(wave))
@@ -180,6 +216,9 @@ class PlotCanvas:
         if self.reference is not None:
             # Keep the baseline framed too, or comparing against it is blind.
             traces += list(self.reference.channels.values())
+        if self.math_line.get_visible():
+            # A math trace drawn off-screen is worse than no math trace.
+            traces.append(np.asarray(self.math_line.get_ydata()))
         low = min(float(np.min(v)) for v in traces)
         high = max(float(np.max(v)) for v in traces)
         if self.level_line.get_visible():
@@ -197,6 +236,17 @@ class PlotCanvas:
         """Parameters computed here rather than asked of the instrument."""
         rows = (analysis.measurements(wave, channel)
                 if wave is not None and channel is not None else {})
+        self._show_readings(f"CH{channel} local", rows)
+
+    def show_math_measurements(self, wave: Optional[Waveform]) -> None:
+        """The same parameters, over the computed trace instead of a channel."""
+        values = self.math_values(wave)
+        rows = (analysis.measurements_of(wave.t, values,
+                                         analysis.math_unit(self.math_op))
+                if values is not None else {})
+        self._show_readings(self.math_op, rows)
+
+    def _show_readings(self, title: str, rows) -> None:
         if not rows:
             self.measurements.set("")
             return
@@ -204,7 +254,7 @@ class PlotCanvas:
                  for label, value, unit in rows.values()]
         # Two rows keep the dozen readings legible under the plot.
         half = (len(cells) + 1) // 2
-        first = f"CH{channel} local  " + "  ".join(cells[:half])
+        first = f"{title:<10}" + "  ".join(cells[:half])
         second = " " * 10 + "  ".join(cells[half:])
         self.measurements.set(first + "\n" + second)
 
@@ -221,6 +271,73 @@ class PlotCanvas:
 
     def savefig(self, path: str, dpi: int = 150) -> None:
         self.figure.savefig(path, dpi=dpi, bbox_inches="tight")
+
+    # ------------------------------------------------------------- math trace
+
+    def set_math(self, op: str) -> None:
+        """Choose the arithmetic combination of the two channels to overlay."""
+        self.math_op = op or analysis.MATH_OFF
+        if self.math_op == analysis.MATH_OFF:
+            self.math_line.set_visible(False)
+            self.math_line.set_label("_math")
+            self._refresh_legend()
+            self.canvas.draw_idle()
+
+    def _draw_math(self, wave: Waveform) -> None:
+        """Update the math overlay for a freshly drawn capture.
+
+        Hidden rather than left stale when the capture lacks an operand: a
+        single-channel capture cannot produce CH1-CH2, and keeping the previous
+        result on screen would read as a current measurement.
+        """
+        values = (analysis.math_trace(wave, self.math_op)
+                  if self.math_op != analysis.MATH_OFF else None)
+        if values is None:
+            if self.math_line.get_visible():
+                self.math_line.set_visible(False)
+                self.math_line.set_label("_math")
+                self._refresh_legend()
+            return
+
+        unit = analysis.math_unit(self.math_op)
+        self.math_line.set_data(wave.t, values)
+        # The unit rides in the legend because the y axis is in volts and a
+        # product of two voltages is not: mixing them on one axis is only
+        # honest if the label says which is which.
+        self.math_line.set_label(f"{self.math_op} ({unit})")
+        self.math_line.set_visible(self.domain == TIME_DOMAIN)
+        self._refresh_legend()
+
+    def math_values(self, wave: Optional[Waveform]):
+        """The math trace for a capture, or None -- for the readout below."""
+        if wave is None or self.math_op == analysis.MATH_OFF:
+            return None
+        return analysis.math_trace(wave, self.math_op)
+
+    # ------------------------------------------------------------------- XY
+
+    def show_xy(self, wave: Waveform, x_channel: int, y_channel: int) -> None:
+        """Plot one channel against the other, time implicit."""
+        self.xy_channels = (x_channel, y_channel)
+        pairs = analysis.xy_pairs(wave, x_channel, y_channel)
+        if pairs is None:
+            self.xy_line.set_data([], [])
+            self.xy_line.set_visible(False)
+            self.spectrum_readout.set(
+                f"XY needs both CH{x_channel} and CH{y_channel} in the capture.")
+            self.canvas.draw_idle()
+            return
+
+        x, y = pairs
+        self.xy_line.set_data(x, y)
+        self.xy_line.set_visible(True)
+        self.ax.set_xlabel(f"CH{x_channel} (V)")
+        self.ax.set_ylabel(f"CH{y_channel} (V)")
+        self.ax.set_xlim(*_padded(x))
+        self.ax.set_ylim(*_padded(y))
+        self.spectrum_readout.set(
+            f"XY  x=CH{x_channel}  y=CH{y_channel}  {len(x)} points")
+        self.canvas.draw_idle()
 
     # ------------------------------------------------------ reference trace
 
@@ -283,37 +400,55 @@ class PlotCanvas:
     # ------------------------------------------------------------- spectrum
 
     def set_domain(self, domain: str, window: Optional[str] = None) -> None:
-        """Switch the canvas between the trace and its spectrum."""
+        """Switch the canvas between the trace, its spectrum, and the XY figure.
+
+        The three views share one axes object, so only the artists change. That
+        keeps every mouse handler attached to the same axes and makes switching
+        back instant, at the cost of having to relabel the axes each time.
+        """
+        if domain not in DOMAINS:
+            raise ValueError(f"unknown domain {domain!r}; expected one of {list(DOMAINS)}")
         self.domain = domain
         if window is not None:
             self.spectrum_window = window
 
-        showing_spectrum = domain == SPECTRUM_DOMAIN
+        time_domain = domain == TIME_DOMAIN
         for line in self.lines.values():
-            line.set_visible(not showing_spectrum)
+            line.set_visible(time_domain)
         for line in self.reference_lines.values():
-            line.set_visible(not showing_spectrum)
-        if showing_spectrum:
+            line.set_visible(time_domain)
+        self.math_line.set_visible(time_domain
+                                   and self.math_op != analysis.MATH_OFF
+                                   and len(self.math_line.get_xdata()) > 0)
+        self.spectrum_line.set_visible(domain == SPECTRUM_DOMAIN)
+        # Only reveal the XY trace if there is one; show_xy hides it again when
+        # the capture is missing an axis.
+        self.xy_line.set_visible(domain == XY_DOMAIN
+                                 and len(self.xy_line.get_xdata()) > 0)
+        if not time_domain:
             self.clear_persistence()
-        self.spectrum_line.set_visible(showing_spectrum)
-        if showing_spectrum:
-            # The level marker and cursors measure volts against time; neither
-            # means anything here, so take them off rather than mislabel them.
+            # The level marker and cursors measure volts against time; in
+            # neither other view do they mean anything, so take them off rather
+            # than leave them mislabelled.
             self.level_line.set_visible(False)
             self.level_tag.set_visible(False)
             self.set_cursor_mode(analysis.OFF)
+
+        legend = self.ax.get_legend()
+        if legend is not None:
+            legend.set_visible(time_domain)
+
+        if domain == SPECTRUM_DOMAIN:
             self.ax.set_xlabel("Frequency (Hz)")
             self.ax.set_ylabel("Magnitude (dBV)")
-            legend = self.ax.get_legend()
-            if legend is not None:
-                legend.set_visible(False)
+        elif domain == XY_DOMAIN:
+            x_channel, y_channel = self.xy_channels
+            self.ax.set_xlabel(f"CH{x_channel} (V)")
+            self.ax.set_ylabel(f"CH{y_channel} (V)")
         else:
             self.ax.set_xlabel("Time (s)")
             self.ax.set_ylabel("Voltage (V)")
             self.spectrum_readout.set("")
-            legend = self.ax.get_legend()
-            if legend is not None:
-                legend.set_visible(True)
         self.canvas.draw_idle()
 
     def show_spectrum(self, wave: Waveform, channel: Optional[int] = None) -> None:

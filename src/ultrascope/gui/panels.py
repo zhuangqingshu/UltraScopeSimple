@@ -269,18 +269,40 @@ class TriggerPanel(Panel):
         return None
 
 
-class ExportPanel(Panel):
-    title = "Export"
+class FilePanel(Panel):
+    """Reading and writing captures.
 
-    def __init__(self, parent, on_csv, on_png, on_deep):
+    Only the deep-memory button needs the instrument. Opening a saved capture
+    and writing the one on screen are pure file operations, so the panel as a
+    whole stays live while disconnected and gates that one button itself --
+    everything downstream of a capture (cursors, spectrum, XY, math, the local
+    measurements) then works on an archived waveform exactly as on a live one.
+    """
+
+    title = "Capture file"
+
+    def __init__(self, parent, on_open, on_csv, on_png, on_deep):
         super().__init__(parent)
         box = self.frame
+        ttk.Button(box, text="Open CSV...", command=on_open)\
+            .grid(row=0, column=0, columnspan=2, sticky="ew")
         ttk.Button(box, text="Save CSV", command=on_csv)\
-            .grid(row=0, column=0, sticky="ew", padx=(0, 3))
+            .grid(row=1, column=0, sticky="ew", padx=(0, 3), pady=(3, 0))
         ttk.Button(box, text="Save PNG", command=on_png)\
-            .grid(row=0, column=1, sticky="ew")
-        ttk.Button(box, text="Deep memory capture (RAW)", command=on_deep)\
-            .grid(row=1, column=0, columnspan=2, sticky="ew", pady=(3, 0))
+            .grid(row=1, column=1, sticky="ew", pady=(3, 0))
+        self.deep_button = ttk.Button(box, text="Deep memory capture (RAW)",
+                                      command=on_deep)
+        self.deep_button.grid(row=2, column=0, columnspan=2, sticky="ew",
+                              pady=(3, 0))
+        self.source = tk.StringVar(value="")
+        ttk.Label(box, textvariable=self.source, foreground="#777",
+                  font=("", 8), wraplength=240)\
+            .grid(row=3, column=0, columnspan=2, sticky="w", pady=(3, 0))
+        self.deep_button.configure(state="disabled")
+
+    def set_enabled(self, on: bool) -> None:
+        # Only the instrument-backed button follows the connection.
+        self.deep_button.configure(state="normal" if on else "disabled")
 
 
 class CursorPanel(Panel):
@@ -361,42 +383,117 @@ class MeasurePanel(Panel):
                 ((self.INSTRUMENT, "From scope"), (self.LOCAL, "Local"))):
             ttk.Radiobutton(self.frame, text=label, value=value,
                             variable=self.source, command=on_change)                .grid(row=0, column=column, sticky="w", padx=(0, 8))
-        self.channel = labelled_combo(self.frame, "Channel", ("1", "2"), 1,
-                                      on_change)
+        # MATH measures the computed trace with the same code as a channel.
+        # Only meaningful for the local source: the instrument has no such
+        # trace, because the arithmetic happens here.
+        self.channel = labelled_combo(self.frame, "Channel",
+                                      ("1", "2", self.MATH), 1, on_change)
         self.channel.set("1")
+
+    MATH = "MATH"
 
     def is_local(self) -> bool:
         return self.source.get() == self.LOCAL
 
+    def is_math(self) -> bool:
+        return self.channel.get() == self.MATH
+
     def channel_number(self) -> Optional[int]:
         text = self.channel.get()
         return int(text) if text.isdigit() else None
 
 
-class SpectrumPanel(Panel):
-    """FFT view. Like the cursors, this is computed locally and stays usable
-    while disconnected."""
+class ViewPanel(Panel):
+    """Which of the three views the canvas shows.
 
-    title = "Spectrum (FFT)"
+    Time, spectrum and XY are mutually exclusive, so this is one combo rather
+    than a checkbox per view. All three are computed locally, so like the
+    cursors this panel stays usable while disconnected.
+
+    Each view's own controls live in a sub-frame that is shown only for that
+    view; a stale window function next to an XY plot would just be noise.
+    """
+
+    title = "View"
+
+    TIME = "Time"
+    SPECTRUM = "Spectrum (FFT)"
+    XY = "XY (CH1 vs CH2)"
+    VIEWS = (TIME, SPECTRUM, XY)
 
     def __init__(self, parent, on_change):
         super().__init__(parent)
-        self.enabled_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(self.frame, text="Show spectrum",
-                        variable=self.enabled_var, command=on_change)            .grid(row=0, column=0, columnspan=3, sticky="w")
-        self.window = labelled_combo(self.frame, "Window",
-                                     analysis.WINDOWS, 1, on_change)
+        box = self.frame
+        self.view = labelled_combo(box, "Show", self.VIEWS, 0,
+                                   lambda: self._changed(on_change))
+        self.view.set(self.TIME)
+
+        self.spectrum_frame = ttk.Frame(box)
+        self.spectrum_frame.grid(row=1, column=0, columnspan=3, sticky="ew")
+        self.spectrum_frame.columnconfigure(1, weight=1)
+        self.window = labelled_combo(self.spectrum_frame, "Window",
+                                     analysis.WINDOWS, 0, on_change)
         self.window.set(analysis.DEFAULT_WINDOW)
-        self.channel = labelled_combo(self.frame, "Channel", ("1", "2"), 2,
-                                      on_change)
+        self.channel = labelled_combo(self.spectrum_frame, "Channel",
+                                      ("1", "2"), 1, on_change)
         self.channel.set("1")
 
-    def showing(self) -> bool:
-        return bool(self.enabled_var.get())
+        self.xy_frame = ttk.Frame(box)
+        self.xy_frame.grid(row=2, column=0, columnspan=3, sticky="ew")
+        self.xy_frame.columnconfigure(1, weight=1)
+        self.x_channel = labelled_combo(self.xy_frame, "X axis", ("1", "2"),
+                                        0, on_change)
+        self.x_channel.set("1")
+        self.y_channel = labelled_combo(self.xy_frame, "Y axis", ("1", "2"),
+                                        1, on_change)
+        self.y_channel.set("2")
+
+        self._changed(lambda: None)
+
+    def _changed(self, on_change) -> None:
+        view = self.view.get()
+        for frame, wanted in ((self.spectrum_frame, self.SPECTRUM),
+                              (self.xy_frame, self.XY)):
+            if view == wanted:
+                frame.grid()
+            else:
+                frame.grid_remove()
+        on_change()
+
+    def showing(self) -> str:
+        """Which view is selected, as one of ViewPanel.VIEWS."""
+        return self.view.get() or self.TIME
 
     def channel_number(self) -> Optional[int]:
         text = self.channel.get()
         return int(text) if text.isdigit() else None
+
+    def xy_channels(self):
+        return (int(self.x_channel.get() or 1), int(self.y_channel.get() or 2))
+
+
+class MathPanel(Panel):
+    """Arithmetic between the two channels.
+
+    Computed with numpy from the samples already in hand rather than through
+    ``:MATH:OPER``: more flexible, no SCPI to get wrong, and it works on a
+    capture loaded from a file.
+    """
+
+    title = "Math"
+
+    def __init__(self, parent, on_change):
+        super().__init__(parent)
+        self.op = labelled_combo(self.frame, "Operation",
+                                 (analysis.MATH_OFF,) + analysis.MATH_OPS,
+                                 0, on_change)
+        self.op.set(analysis.MATH_OFF)
+        ttk.Label(self.frame, text="needs both channels captured",
+                  foreground="#777", font=("", 8))\
+            .grid(row=1, column=0, columnspan=3, sticky="w", pady=(2, 0))
+
+    def operation(self) -> str:
+        return self.op.get() or analysis.MATH_OFF
 
 
 class SetupPanel(Panel):

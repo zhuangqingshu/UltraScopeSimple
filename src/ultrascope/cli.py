@@ -18,6 +18,9 @@ Examples:
 
     ultrascope-dump --trigger-mode pulse --trigger-condition "+Width <" --trigger-width 100e-9
         Trigger on positive pulses narrower than 100 ns.
+
+    ultrascope-dump --open old.csv --measure --spectrum
+        Analyse a capture saved earlier. No instrument is contacted.
 """
 
 from __future__ import annotations
@@ -26,12 +29,21 @@ import argparse
 import sys
 from typing import List, Optional, Sequence
 
-from . import export
+from . import analysis, export
 from .scope import Scope, ScopeError
 from .setup_file import load_setup, save_setup
 from .units import eng
 
 SLOPE_ALIASES = {"pos": "positive", "neg": "negative"}
+
+# Options that only make sense against a live instrument. --open refuses them
+# rather than accepting a command line whose meaning is self-contradictory.
+INSTRUMENT_ONLY = ("resource", "single", "save_setup", "load_setup", "timebase",
+                   "probe", "offset", "position", "acquire", "average",
+                   "memdepth", "trigger_mode", "trigger_source",
+                   "trigger_slope", "trigger_level", "trigger_coupling",
+                   "trigger_holdoff", "sweep", "trigger_condition",
+                   "trigger_width")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -47,7 +59,24 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--out", default="waveform.csv")
     ap.add_argument("--plot", action="store_true", help="also write <out>.png")
     ap.add_argument("--measure", action="store_true",
-                    help="print Vpp/Vrms/frequency etc. for each channel")
+                    help="print Vpp/Vrms/frequency etc. for each channel "
+                         "(from the instrument; local maths with --open)")
+
+    off = ap.add_argument_group(
+        "offline analysis",
+        "Computed locally from the samples, so these need no instrument and "
+        "work on a capture read back with --open.")
+    off.add_argument("--open", dest="open_path", metavar="PATH",
+                     help="analyse a CSV written earlier instead of "
+                          "connecting; instrument options are refused")
+    off.add_argument("--spectrum", action="store_true",
+                     help="print the FFT peak, resolution and sample rate")
+    off.add_argument("--window", choices=list(analysis.WINDOWS),
+                     default=analysis.DEFAULT_WINDOW,
+                     help="FFT window for --spectrum (default hann)")
+    off.add_argument("--math", choices=list(analysis.MATH_OPS), metavar="OP",
+                     help="combine the two channels: "
+                          + ", ".join(analysis.MATH_OPS))
 
     trig = ap.add_argument_group("trigger")
     trig.add_argument("--trigger-mode",
@@ -98,9 +127,21 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
     args.trigger_slope = SLOPE_ALIASES.get(args.trigger_slope, args.trigger_slope)
     args.channel_list = parse_channels(args.channels)
+
+    if args.open_path:
+        # Silently ignoring "--open x.csv --timebase 1e-3" would leave the user
+        # believing a setting was applied somewhere.
+        offending = [name for name in INSTRUMENT_ONLY
+                     if getattr(args, name) != parser.get_default(name)]
+        if offending:
+            parser.error("--open reads a file and never connects, so it cannot "
+                         "be combined with: "
+                         + ", ".join("--" + n.replace("_", "-")
+                                     for n in offending))
     return args
 
 
@@ -116,8 +157,66 @@ def format_measurements(stats) -> str:
     return "  ".join(parts)
 
 
+def format_readings(rows) -> str:
+    """Rows from analysis, which carry their own units."""
+    return "  ".join(
+        f"{label}={eng(value, unit) if value is not None else '--'}"
+        for label, value, unit in rows.values())
+
+
+def report_analysis(wave, args) -> None:
+    """Print whatever local analysis was asked for. No instrument involved."""
+    if args.math:
+        values = analysis.math_trace(wave, args.math)
+        if values is None:
+            print(f"{args.math}: needs both channels in the capture")
+        else:
+            rows = analysis.measurements_of(wave.t, values,
+                                            analysis.math_unit(args.math))
+            print(f"{args.math}  " + format_readings(rows))
+
+    if args.spectrum:
+        for ch in wave.channel_ids:
+            spec = analysis.spectrum(wave, ch, args.window)
+            if spec is None:
+                print(f"CH{ch}  spectrum: not enough samples")
+                continue
+            frequency, volts = spec.peak()
+            peak = ("--" if frequency is None
+                    else f"{eng(frequency, 'Hz')} @ {eng(volts, 'V')}")
+            print(f"CH{ch}  peak={peak}  window={spec.window}"
+                  f"  res={eng(spec.resolution, 'Hz')}"
+                  f"  fs={eng(spec.sample_rate, 'Sa/s')}")
+
+
+def analyse_file(args) -> None:
+    """The --open path: read a capture from disk and measure it.
+
+    Deliberately never constructs a Scope, so this works with no instrument, no
+    VISA backend and no UltraSigma driver installed.
+    """
+    wave = export.load_csv(args.open_path)
+    print(f"Read {args.open_path}: {wave.npoints} points, "
+          f"{eng(wave.timebase, 's')}/div")
+
+    if args.measure:
+        for ch in wave.channel_ids:
+            print(f"CH{ch}  " + format_readings(analysis.measurements(wave, ch)))
+    report_analysis(wave, args)
+
+    if args.plot:
+        print("Wrote", export.save_png(export.png_path_for(args.open_path), wave))
+
+
 def main(argv: Optional[Sequence[str]] = None) -> None:
     args = parse_args(argv)
+
+    if args.open_path:
+        try:
+            analyse_file(args)
+        except (OSError, ValueError) as exc:
+            sys.exit(str(exc))
+        return
 
     try:
         scope = Scope.connect(args.resource)
@@ -186,6 +285,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         if args.measure:
             for ch in wave.channel_ids:
                 print(f"CH{ch}  " + format_measurements(scope.measure(ch)))
+        # Local analysis over the capture just taken; costs no extra SCPI.
+        report_analysis(wave, args)
 
         if args.plot:
             png = export.save_png(export.png_path_for(args.out), wave)
