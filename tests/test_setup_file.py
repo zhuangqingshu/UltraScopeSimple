@@ -51,3 +51,56 @@ def test_unreadable_file_raises_rather_than_returning_junk(tmp_path):
     path.write_text("{not json", encoding="utf-8")
     with pytest.raises(ValueError):
         load_setup(str(path))
+
+
+# --- waveform CSV round trip ------------------------------------------------
+
+import numpy as np  # noqa: E402
+
+from ultrascope.export import load_csv, save_csv  # noqa: E402
+from ultrascope.profile import DS1000E  # noqa: E402
+from ultrascope.waveform import Waveform, time_axis  # noqa: E402
+
+
+def capture(channels=(1, 2), npoints=64):
+    t = time_axis(npoints, 1e-3, 2e-4, DS1000E)
+    return Waveform(t=t,
+                    channels={ch: np.sin(t * 1000 * ch) for ch in channels},
+                    timebase=1e-3, time_offset=2e-4)
+
+
+def test_a_capture_survives_the_csv_round_trip(tmp_path):
+    path = tmp_path / "wave.csv"
+    original = capture()
+    save_csv(str(path), original)
+    restored = load_csv(str(path))
+
+    assert restored.channel_ids == original.channel_ids
+    assert restored.t == pytest.approx(original.t, rel=1e-6)
+    for ch in original.channel_ids:
+        assert restored.channels[ch] == pytest.approx(original.channels[ch],
+                                                      abs=1e-8)
+
+
+def test_the_timebase_is_reconstructed_from_the_time_column(tmp_path):
+    # The file carries no settings, so this comes back via the same 12-division
+    # assumption the capture was built with.
+    path = tmp_path / "wave.csv"
+    original = capture()
+    save_csv(str(path), original)
+    restored = load_csv(str(path))
+    assert restored.timebase == pytest.approx(original.timebase, rel=1e-6)
+    assert restored.time_offset == pytest.approx(original.time_offset, abs=1e-9)
+
+
+def test_a_single_channel_file_round_trips(tmp_path):
+    path = tmp_path / "one.csv"
+    save_csv(str(path), capture(channels=(2,)))
+    assert load_csv(str(path)).channel_ids == [2]
+
+
+def test_a_file_that_is_not_a_waveform_is_rejected(tmp_path):
+    path = tmp_path / "other.csv"
+    path.write_text("a,b\n1,2\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="not a waveform CSV"):
+        load_csv(str(path))

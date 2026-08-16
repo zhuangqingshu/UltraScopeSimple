@@ -19,7 +19,8 @@ from ..setup_file import load_setup, save_setup
 from ..units import eng
 from .panels import (AcquisitionPanel, ChannelPanel, ConnectionPanel,
                      CursorPanel, ExportPanel, HorizontalPanel,
-                     MeasurePanel, SetupPanel, SpectrumPanel, TriggerPanel)
+                     MeasurePanel, PersistencePanel, ReferencePanel,
+                     SetupPanel, SpectrumPanel, TriggerPanel)
 from .plot import SPECTRUM_DOMAIN, TIME_DOMAIN, PlotCanvas
 from .worker import Worker
 
@@ -82,12 +83,18 @@ class App(ttk.Frame):
         self.cursor_panel = CursorPanel(panel, self._apply_cursor_mode)
         self.spectrum_panel = SpectrumPanel(panel, self._apply_spectrum)
         self.measure_panel = MeasurePanel(panel, self._apply_measure_source)
+        self.reference_panel = ReferencePanel(
+            panel, self._store_reference, self._load_reference,
+            self._clear_reference)
+        self.persistence_panel = PersistencePanel(
+            panel, self._apply_persistence, self._clear_persistence)
 
         self.panels = [self.connection, self.acquisition,
                        *self.channels.values(), self.horizontal,
                        self.trigger, self.export_panel, self.setup_panel,
                        self.cursor_panel, self.spectrum_panel,
-                       self.measure_panel]
+                       self.measure_panel, self.reference_panel,
+                       self.persistence_panel]
         for row, item in enumerate(self.panels):
             item.grid(row)
 
@@ -108,7 +115,8 @@ class App(ttk.Frame):
 
     # Panels that do not talk to the instrument stay live while disconnected.
     ALWAYS_ENABLED = ("connection", "cursor_panel", "spectrum_panel",
-                      "measure_panel")
+                      "measure_panel", "reference_panel",
+                      "persistence_panel")
 
     def _set_enabled(self, on: bool) -> None:
         """Everything that needs a connection follows the connection state."""
@@ -365,6 +373,40 @@ class App(ttk.Frame):
 
     def _apply_cursor_mode(self) -> None:
         self.plot.set_cursor_mode(self.cursor_panel.mode.get())
+
+    # -------------------------------------------------- reference / trail
+
+    def _store_reference(self) -> None:
+        if self.last_capture is None:
+            messagebox.showinfo("Nothing to store", "Capture a waveform first.")
+            return
+        self.plot.set_reference(self.last_capture)
+        self.reference_panel.status.set(
+            f"stored: {self.last_capture.npoints} pts, "
+            f"CH{','.join(str(c) for c in self.last_capture.channel_ids)}")
+
+    def _load_reference(self) -> None:
+        path = filedialog.askopenfilename(filetypes=[("Waveform CSV", "*.csv"),
+                                                     ("All files", "*.*")])
+        if not path:
+            return
+        try:
+            wave = export.load_csv(path)
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("Cannot read waveform", str(exc))
+            return
+        self.plot.set_reference(wave)
+        self.reference_panel.status.set(f"loaded: {path}")
+
+    def _clear_reference(self) -> None:
+        self.plot.set_reference(None)
+        self.reference_panel.status.set("none stored")
+
+    def _apply_persistence(self) -> None:
+        self.plot.set_persistence(self.persistence_panel.frames())
+
+    def _clear_persistence(self) -> None:
+        self.plot.clear_persistence()
 
     def _apply_measure_source(self) -> None:
         if self.measure_panel.is_local():

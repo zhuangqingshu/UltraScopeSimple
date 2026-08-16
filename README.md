@@ -22,7 +22,7 @@ src/ultrascope/
   profile.py     机型参数：码值换算、分格数、量程档位、各触发模式的参数规格
   waveform.py    488.2 块解析、码值 → 电压、Waveform 值对象
   scope.py       Scope —— SCPI 指令门面
-  export.py      CSV / PNG 落盘
+  export.py      CSV / PNG 落盘，以及 CSV 读回
   setup_file.py  配置文件读写
   analysis.py    本地分析：光标读数、插值取样、FFT 频谱、参数测量
   units.py       eng() 显示格式化、scpi_number() 下发格式化
@@ -54,6 +54,9 @@ ultrascope-gui
   纵轴 dBV，读数给出峰值频率与幅度、频率分辨率、等效采样率。同样是本地计算，断开也能用
 - **Measurements**：读数来源在「From scope」（仪器自动测量，更准，需连接）与「Local」
   （本地按采样点算 15 项：电平、上升/下降时间、周期/频率、脉宽、占空比、过冲）之间切换
+- **Reference**：Store current 把当前波形存为基准，以蓝色虚线叠加对比"改动前后"；
+  Load CSV 可载入之前导出的波形作基准，因此基准能跨会话保留
+- **Persistence**：0–32 帧余辉，残影按新旧渐隐，用来暴露抖动与偶发异常
 - **Setup**：保存/加载完整配置（JSON），与 CLI 的 `--save-setup` / `--load-setup` 通用
 - **Export**：保存 CSV / PNG，Deep memory capture 读取深存储（见下方「已知限制」）
 
@@ -112,11 +115,18 @@ ultrascope-dump --load-setup bench.json
 ## 作为库使用
 
 ```python
-from ultrascope import Scope, save_csv
+from ultrascope import Scope, save_csv, load_csv
+from ultrascope import analysis
 
 with Scope.connect() as scope:
     wave = scope.capture(points="normal")
     save_csv("out.csv", wave)
+
+# 分析不需要示波器，对存档波形一样可用
+wave = load_csv("out.csv")
+for label, value, unit in analysis.measurements(wave, 1).values():
+    print(label, value, unit)
+print(analysis.spectrum(wave, 1).peak())
 ```
 
 ## 数据格式

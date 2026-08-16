@@ -107,7 +107,7 @@ src/ultrascope/
   profile.py     DeviceProfile：码值换算、分格数、量程/探头档位、各项范围上下限
   waveform.py    纯函数 parse_block / decode / time_axis + Waveform 值对象
   scope.py       Scope —— SCPI 门面；ScopeSettings —— 状态快照与配置文件格式
-  export.py      CSV / PNG 落盘
+  export.py      CSV / PNG 落盘与 CSV 读回（参考波形用）
   setup_file.py  配置文件读写
   units.py       eng() 显示格式化、scpi_number() 下发格式化
   analysis.py    本地分析：光标读数、插值取样、FFT 频谱、参数测量（纯函数，不碰仪器）
@@ -157,11 +157,12 @@ USBTMC 不能被两处同时使用，而实时刷新和用户点按钮天然会�
 ## 5. 进度
 
 `ROADMAP.md` 第一阶段五项已完成。第二阶段完成 PULSE 与 SLOPE，VIDEO / PATTERN /
-DURATION 未做。第三阶段完成光标测量、FFT 频谱与本地参数测量；参考波形与余辉未做。第四、五阶段未开始。
+DURATION 未做。第三阶段**全部完成**（光标测量、FFT 频谱、本地参数测量、参考波形、余辉）。
+第四、五阶段未开始。
 
 **光标测量与 FFT 都是纯本地计算**（`analysis.py` + `gui/plot.py`），完全不走 SCPI，
 所以没有验证债，断开连接也能用（`App.ALWAYS_ENABLED` 让这两个面板不随连接状态禁用）。
-第三阶段其余项（参考波形、余辉）性质相同，在等硬件时是最划算的方向。
+第三阶段五项全部如此，所以在示波器断开期间做完了整个阶段而没有增加任何待验项。
 
 参数测量刻意选了**本地计算**而非调用仪器的 22 种自动测量：后者要新增一批无从核实的
 SCPI 命令名。代价是分辨率——屏幕记录 600 点，极短的边沿量不出来，那种情况用

@@ -303,6 +303,43 @@ class CursorPanel(Panel):
                   foreground="#777", font=("", 8))            .grid(row=1, column=0, columnspan=3, sticky="w", pady=(2, 0))
 
 
+class ReferencePanel(Panel):
+    """A stored trace to compare the live one against.
+
+    Local like the cursors: the reference is only ever drawn, never sent.
+    """
+
+    title = "Reference"
+
+    def __init__(self, parent, on_store, on_load, on_clear):
+        super().__init__(parent)
+        ttk.Button(self.frame, text="Store current", command=on_store)            .grid(row=0, column=0, sticky="ew", padx=(0, 3))
+        ttk.Button(self.frame, text="Load CSV", command=on_load)            .grid(row=0, column=1, sticky="ew")
+        ttk.Button(self.frame, text="Clear", command=on_clear)            .grid(row=1, column=0, columnspan=2, sticky="ew", pady=(3, 0))
+        self.status = tk.StringVar(value="none stored")
+        ttk.Label(self.frame, textvariable=self.status, foreground="#777",
+                  font=("", 8), wraplength=240)            .grid(row=2, column=0, columnspan=2, sticky="w", pady=(3, 0))
+
+
+class PersistencePanel(Panel):
+    """Fading trail of recent frames -- shows jitter and rare glitches that a
+    single frame hides."""
+
+    title = "Persistence"
+
+    def __init__(self, parent, on_change, on_clear):
+        super().__init__(parent)
+        self.depth = labelled_combo(self.frame, "Frames",
+                                    ("0", "2", "5", "10", "20", "32"),
+                                    0, on_change)
+        self.depth.set("0")
+        ttk.Button(self.frame, text="Clear trail", command=on_clear)            .grid(row=1, column=0, columnspan=3, sticky="ew", pady=(3, 0))
+
+    def frames(self) -> int:
+        text = self.depth.get()
+        return int(text) if text.isdigit() else 0
+
+
 class MeasurePanel(Panel):
     """Chooses where the readout under the plot comes from.
 

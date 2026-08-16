@@ -306,3 +306,127 @@ def test_the_view_is_scaled_around_the_strongest_bin(canvas):
     canvas.show_spectrum(tone(), 1)
     low, high = canvas.ax.get_ylim()
     assert high - low == pytest.approx(SPECTRUM_DB_RANGE + SPECTRUM_DB_HEADROOM)
+
+
+# --- reference trace --------------------------------------------------------
+
+def test_no_reference_to_begin_with(canvas):
+    assert canvas.reference is None
+    assert canvas.reference_lines == {}
+
+
+def test_storing_a_reference_draws_it_alongside_the_live_trace(canvas):
+    canvas.show(wave_between(-1.0, 1.0))
+    canvas.set_reference(wave_between(-2.0, 2.0))
+    assert canvas.reference is not None
+    assert set(canvas.reference_lines) == {1}
+    assert canvas.lines[1].get_visible()
+
+
+def test_clearing_a_reference_removes_its_artist(canvas):
+    canvas.show(wave_between(-1.0, 1.0))
+    canvas.set_reference(wave_between(-2.0, 2.0))
+    canvas.set_reference(None)
+    assert canvas.reference is None
+    assert canvas.reference_lines == {}
+
+
+def test_replacing_a_reference_does_not_leave_the_old_one_behind(canvas):
+    canvas.show(wave_between(-1.0, 1.0))
+    for _ in range(3):
+        canvas.set_reference(wave_between(-2.0, 2.0))
+    assert len(canvas.reference_lines) == 1
+
+
+def test_the_view_frames_the_reference_too(canvas):
+    # A baseline drawn off screen is no use for comparing against.
+    live = wave_between(-0.2, 0.2)
+    canvas.set_reference(wave_between(-5.0, 5.0))
+    low, high = canvas.y_limits(live)
+    assert low < -5.0 and high > 5.0
+
+
+def test_the_reference_is_hidden_in_the_spectrum(canvas):
+    canvas.show(wave_between(-1.0, 1.0))
+    canvas.set_reference(wave_between(-2.0, 2.0))
+    canvas.set_domain(SPECTRUM_DOMAIN)
+    assert not canvas.reference_lines[1].get_visible()
+    canvas.set_domain(TIME_DOMAIN)
+    assert canvas.reference_lines[1].get_visible()
+
+
+# --- persistence ------------------------------------------------------------
+
+def test_persistence_is_off_to_begin_with(canvas):
+    assert canvas.persistence_depth == 0
+    canvas.show(wave_between(-1.0, 1.0))
+    assert len(canvas.persistence_lines) == 0
+
+
+def test_frames_accumulate_up_to_the_chosen_depth(canvas):
+    canvas.set_persistence(3)
+    for _ in range(10):
+        canvas.show(wave_between(-1.0, 1.0))
+    assert len(canvas.persistence_lines) == 3
+
+
+def test_older_frames_are_fainter_than_newer_ones(canvas):
+    canvas.set_persistence(4)
+    for _ in range(4):
+        canvas.show(wave_between(-1.0, 1.0))
+    alphas = [ghost.get_alpha() for ghost in canvas.persistence_lines]
+    assert alphas == sorted(alphas)          # oldest first, so alpha climbs
+    assert 0 < alphas[0] < alphas[-1] <= 1.0
+
+
+def test_the_depth_counts_frames_not_traces(canvas):
+    # Two channels per frame must still leave exactly `depth` frames of trail.
+    canvas.set_persistence(3)
+    t = time_axis(200, 1e-3, 0.0, DS1000E)
+    two = Waveform(t=t, channels={1: np.zeros(200), 2: np.ones(200)},
+                   timebase=1e-3, time_offset=0.0)
+    for _ in range(8):
+        canvas.show(two)
+    assert len(canvas.persistence_lines) == 6      # 3 frames x 2 channels
+
+
+def test_clearing_the_trail_removes_every_ghost(canvas):
+    canvas.set_persistence(5)
+    for _ in range(5):
+        canvas.show(wave_between(-1.0, 1.0))
+    canvas.clear_persistence()
+    assert len(canvas.persistence_lines) == 0
+
+
+def test_changing_the_depth_starts_a_fresh_trail(canvas):
+    canvas.set_persistence(5)
+    for _ in range(5):
+        canvas.show(wave_between(-1.0, 1.0))
+    canvas.set_persistence(2)
+    assert len(canvas.persistence_lines) == 0
+
+
+def test_the_depth_is_capped(canvas):
+    from ultrascope.gui.plot import MAX_PERSISTENCE
+
+    canvas.set_persistence(9999)
+    assert canvas.persistence_depth == MAX_PERSISTENCE
+    canvas.set_persistence(-4)
+    assert canvas.persistence_depth == 0
+
+
+def test_ghosts_stay_out_of_the_legend(canvas):
+    # One legend entry per ghost would bury the channel labels.
+    canvas.set_persistence(3)
+    for _ in range(3):
+        canvas.show(wave_between(-1.0, 1.0))
+    labels = [ghost.get_label() for ghost in canvas.persistence_lines]
+    assert all(label.startswith("_") for label in labels)
+
+
+def test_the_trail_is_dropped_when_the_spectrum_opens(canvas):
+    canvas.set_persistence(3)
+    for _ in range(3):
+        canvas.show(wave_between(-1.0, 1.0))
+    canvas.set_domain(SPECTRUM_DOMAIN)
+    assert len(canvas.persistence_lines) == 0

@@ -11,6 +11,7 @@ can be built and drawn without an instrument.
 from __future__ import annotations
 
 import tkinter as tk
+from collections import deque
 from tkinter import ttk
 from typing import Optional
 
@@ -38,6 +39,12 @@ SPECTRUM_DOMAIN = "spectrum"
 # to leave above it.
 SPECTRUM_DB_RANGE = 100.0
 SPECTRUM_DB_HEADROOM = 10.0
+
+# Reference overlay and persistence.
+REFERENCE_COLOUR = "#8888ff"
+MAX_PERSISTENCE = 32
+# Oldest surviving frame is drawn at this alpha; newer ones fade up to 1.
+FAINTEST_ALPHA = 0.08
 
 
 class PlotCanvas:
@@ -100,6 +107,13 @@ class PlotCanvas:
                                              linewidth=1.0, visible=False)
         self.spectrum_window = analysis.DEFAULT_WINDOW
 
+        # A stored trace to compare against, and a trail of recent frames.
+        # Both are view-only: neither is ever sent anywhere.
+        self.reference = None
+        self.reference_lines = {}
+        self.persistence_depth = 0
+        self.persistence_lines = deque()
+
         self.spectrum_readout = tk.StringVar(value="")
         ttk.Label(self.container, textvariable=self.spectrum_readout,
                   font=("Consolas", 9), foreground="#c26a00",
@@ -130,6 +144,7 @@ class PlotCanvas:
     # ------------------------------------------------------------- drawing
 
     def show(self, wave: Waveform) -> None:
+        self._push_persistence(wave)
         for ch in wave.channel_ids:
             volts = wave.channels[ch]
             line = self.lines.get(ch)
@@ -161,8 +176,12 @@ class PlotCanvas:
         trace up, the write lands, and the next live frame yanks the axis back
         to a symmetric range with half the screen wasted.
         """
-        low = min(float(np.min(v)) for v in wave.channels.values())
-        high = max(float(np.max(v)) for v in wave.channels.values())
+        traces = list(wave.channels.values())
+        if self.reference is not None:
+            # Keep the baseline framed too, or comparing against it is blind.
+            traces += list(self.reference.channels.values())
+        low = min(float(np.min(v)) for v in traces)
+        high = max(float(np.max(v)) for v in traces)
         if self.level_line.get_visible():
             # Keep the marker on screen even when it sits outside the signal.
             low, high = min(low, self.level), max(high, self.level)
@@ -203,6 +222,64 @@ class PlotCanvas:
     def savefig(self, path: str, dpi: int = 150) -> None:
         self.figure.savefig(path, dpi=dpi, bbox_inches="tight")
 
+    # ------------------------------------------------------ reference trace
+
+    def set_reference(self, wave: Optional[Waveform]) -> None:
+        """Freeze a capture as the baseline to compare against, or clear it."""
+        self.reference = wave
+        for line in self.reference_lines.values():
+            line.remove()
+        self.reference_lines = {}
+
+        if wave is not None:
+            for ch in wave.channel_ids:
+                (line,) = self.ax.plot(wave.t, wave.channels[ch],
+                                       color=REFERENCE_COLOUR, linewidth=1.0,
+                                       linestyle="--", alpha=0.8,
+                                       label=f"REF{ch}")
+                self.reference_lines[ch] = line
+        self._refresh_legend()
+        self.canvas.draw_idle()
+
+    def _refresh_legend(self) -> None:
+        handles, labels = self.ax.get_legend_handles_labels()
+        if handles:
+            self.ax.legend(handles, labels, loc="upper right", fontsize=8)
+
+    # --------------------------------------------------------- persistence
+
+    def set_persistence(self, depth: int) -> None:
+        """Keep this many previous frames on screen, fading with age."""
+        self.persistence_depth = max(0, min(int(depth), MAX_PERSISTENCE))
+        self.clear_persistence()
+
+    def clear_persistence(self) -> None:
+        while self.persistence_lines:
+            self.persistence_lines.popleft().remove()
+        self.canvas.draw_idle()
+
+    def _push_persistence(self, wave: Waveform) -> None:
+        """Leave a fading copy of the frame that is about to be replaced."""
+        if self.persistence_depth <= 0 or self.domain != TIME_DOMAIN:
+            return
+        for ch in wave.channel_ids:
+            (ghost,) = self.ax.plot(wave.t, wave.channels[ch],
+                                    color=st.CHANNEL_COLOURS.get(ch, "#cccccc"),
+                                    linewidth=0.8)
+            # Kept out of the legend: one entry per ghost would swamp it.
+            ghost.set_label("_ghost")
+            self.persistence_lines.append(ghost)
+
+        limit = self.persistence_depth * max(1, len(wave.channel_ids))
+        while len(self.persistence_lines) > limit:
+            self.persistence_lines.popleft().remove()
+
+        total = len(self.persistence_lines)
+        for age, ghost in enumerate(self.persistence_lines):
+            # Oldest first in the deque, so alpha climbs towards the newest.
+            ghost.set_alpha(FAINTEST_ALPHA
+                            + (1.0 - FAINTEST_ALPHA) * (age + 1) / (total + 1))
+
     # ------------------------------------------------------------- spectrum
 
     def set_domain(self, domain: str, window: Optional[str] = None) -> None:
@@ -214,6 +291,10 @@ class PlotCanvas:
         showing_spectrum = domain == SPECTRUM_DOMAIN
         for line in self.lines.values():
             line.set_visible(not showing_spectrum)
+        for line in self.reference_lines.values():
+            line.set_visible(not showing_spectrum)
+        if showing_spectrum:
+            self.clear_persistence()
         self.spectrum_line.set_visible(showing_spectrum)
         if showing_spectrum:
             # The level marker and cursors measure volts against time; neither
