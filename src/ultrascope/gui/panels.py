@@ -12,6 +12,9 @@ from typing import Callable, Optional, Sequence
 
 from . import state as st
 
+# The CLI's --trigger-timeout default; kept in step with cli.py.
+DEFAULT_SINGLE_TIMEOUT_S = 30.0
+
 
 def labelled_combo(parent, label: str, values: Sequence[str], row: int,
                    command: Callable[[], None], width: int = 13):
@@ -126,6 +129,15 @@ class AcquisitionPanel(Panel):
         self.acq_type = labelled_combo(box, "Type", st.ACQ_TYPES, 2, on_apply)
         self.average = labelled_combo(box, "Averages", st.AVERAGE_COUNTS, 3, on_apply)
         self.memory = labelled_combo(box, "Memory", st.MEMORY_DEPTHS, 4, on_apply)
+        # Mirrors the CLI's --trigger-timeout; Single blocks the worker for
+        # this long, so it is worth being able to shorten it.
+        self.single_timeout = labelled_entry(box, "Single wait (s)", 5,
+                                             lambda: None)
+        self.single_timeout.set(str(DEFAULT_SINGLE_TIMEOUT_S))
+
+    def single_timeout_seconds(self) -> float:
+        value = parse_float(self.single_timeout.get())
+        return value if value and value > 0 else DEFAULT_SINGLE_TIMEOUT_S
 
 
 class ChannelPanel(Panel):

@@ -52,6 +52,23 @@ COUPLINGS = ("DC", "AC", "GND")
 TRIGGER_MODES = ("EDGE", "PULSE", "VIDEO", "SLOPE",
                  "PATTERN", "DURATION", "ALTERNATION")
 TRIGGER_SOURCES = ("CHAN1", "CHAN2", "EXT", "ACLINE")
+
+
+def normalise_trigger_source(text: str) -> str:
+    """Map what the instrument reports onto the combobox's own options.
+
+    ``:TRIG:EDGE:SOUR?`` answers ``CH1`` while the panel offers ``CHAN1``;
+    setting the raw answer would put a value in the readonly combobox that is
+    not one of its options.
+    """
+    value = (text or "").strip().upper()
+    if value in TRIGGER_SOURCES:
+        return value
+    if "1" in value:
+        return "CHAN1"
+    if "2" in value:
+        return "CHAN2"
+    return value
 TRIGGER_SLOPES = ("POSITIVE", "NEGATIVE")
 TRIGGER_SWEEPS = ("AUTO", "NORMAL", "SINGLE")
 TRIGGER_COUPLINGS = ("DC", "AC", "HF", "LF")

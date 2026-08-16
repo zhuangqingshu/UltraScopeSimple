@@ -22,6 +22,8 @@ from ..waveform import Waveform
 from . import state as st
 
 Y_MARGIN = 1.15
+# A perfectly flat trace has no extent to scale, so give it a window anyway.
+FLAT_TRACE_HALF_SPAN = 1.0
 # How close to the marker the cursor must be to grab it, as a fraction of the
 # visible voltage span.
 GRAB_TOLERANCE = 0.03
@@ -108,15 +110,29 @@ class PlotCanvas:
             if ch not in wave.channels:
                 line.set_visible(False)
 
-        span = max(np.max(np.abs(v)) for v in wave.channels.values())
-        if self.level_line.get_visible():
-            # Keep the marker on screen even when it sits outside the signal.
-            span = max(span, abs(self.level))
-        span = span * Y_MARGIN or 1.0
         if self.pan is None:   # a drag in progress owns the view; don't fight it
             self.ax.set_xlim(wave.t[0], wave.t[-1])
-            self.ax.set_ylim(-span, span)
+            self.ax.set_ylim(*self.y_limits(wave))
         self.canvas.draw_idle()
+
+    def y_limits(self, wave: Waveform):
+        """The vertical window, following where the trace actually sits.
+
+        Centring on zero instead would undo the vertical offset: you drag the
+        trace up, the write lands, and the next live frame yanks the axis back
+        to a symmetric range with half the screen wasted.
+        """
+        low = min(float(np.min(v)) for v in wave.channels.values())
+        high = max(float(np.max(v)) for v in wave.channels.values())
+        if self.level_line.get_visible():
+            # Keep the marker on screen even when it sits outside the signal.
+            low, high = min(low, self.level), max(high, self.level)
+
+        centre = (low + high) / 2.0
+        half = (high - low) / 2.0 * Y_MARGIN
+        if half <= 0:
+            half = FLAT_TRACE_HALF_SPAN   # a DC level has no extent of its own
+        return centre - half, centre + half
 
     def show_measurements(self, stats) -> None:
         lines = []

@@ -23,7 +23,6 @@ from .plot import PlotCanvas
 from .worker import Worker
 
 REFRESH_MS = 40           # how often the UI drains the result queue
-SINGLE_TIMEOUT_S = 30.0   # GUI one-shot wait; the CLI exposes --trigger-timeout
 AUTOSET_SETTLE_MS = 2000  # :AUTO takes a while before the new state reads back
 
 CHANNELS = (1, 2)
@@ -198,8 +197,10 @@ class App(ttk.Frame):
             # The plot needs volts/div to clamp the level and size the wheel step.
             self.plot.volt_scales[ch] = info.volt_scale
 
-        for var, value in ((self.trigger.source, settings.trigger_source),
-                           (self.trigger.slope, settings.trigger_slope),
+        if settings.trigger_source is not None:
+            self.trigger.source.set(
+                st.normalise_trigger_source(settings.trigger_source))
+        for var, value in ((self.trigger.slope, settings.trigger_slope),
                            (self.trigger.sweep, settings.trigger_sweep)):
             if value is not None:
                 var.set(value.upper())
@@ -240,8 +241,10 @@ class App(ttk.Frame):
         self._pause_live()
         self.status.set("Armed, waiting for trigger...")
 
+        timeout = self.acquisition.single_timeout_seconds()
+
         def job(scope):
-            got = scope.single(timeout_s=SINGLE_TIMEOUT_S)
+            got = scope.single(timeout_s=timeout)
             return got, scope.capture(points="normal")
 
         self._do(job, "single", restream=False)
