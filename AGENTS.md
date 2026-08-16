@@ -14,7 +14,7 @@ Python package for Rigol DS1102E / DS1000D-E oscilloscopes. CLI + Tkinter GUI ov
 Layering is strictly one-directional: `cli.py`/`gui/` → `scope.py` → `waveform.py` + `profile.py` → `transport.py`.
 
 - `transport.py` — the only module importing pyvisa. `Transport` protocol + `PyVisaTransport` + `FakeTransport`. Timeouts change via the `timeout(ms)` context manager.
-- `profile.py` — `DeviceProfile` holds every per-model hardware fact. New model = new profile, not edits to the decode path.
+- `profile.py` — `DeviceProfile` holds every per-model hardware fact, including the PULSE/SLOPE condition specs. New model = new profile, not edits to the decode path.
 - `waveform.py` — pure `parse_block` / `decode` / `time_axis` + the `Waveform` value object.
 - `scope.py` — `Scope` SCPI facade; `Scope.connect()` convenience constructor; `snapshot()` → `ScopeSettings`.
 - `gui/` — `worker.py` / `state.py` / `panels.py` / `plot.py` / `app.py`.
@@ -32,6 +32,7 @@ Layering is strictly one-directional: `cli.py`/`gui/` → `scope.py` → `wavefo
 - No per-sample timing: the time axis spans 12 horizontal divisions centred on the time offset.
 - Deep memory (`points="raw"`) requires STOP and the 120 s timeout; `normal` is 600 points.
 - `:TRIG:MODE?` returns a full word, subtrees are abbreviated — always via `trigger_subsys()`. ALTERNATION has no sweep.
+- PULSE/SLOPE command spellings in `profile.py` are unverified and untested on hardware (the bundled manual is the User's Guide, no SCPI reference). All spellings live in `DS1000E_PULSE_TRIGGER`/`DS1000E_SLOPE_TRIGGER`; tests assert composition, not spelling.
 - Measurements return >1e37 when unavailable → mapped to `None`. Average count 2–256.
 - USB driver comes from UltraSigma; without it VISA enumerates nothing.
 - `close()` sends `:KEY:FORC` to return front-panel control.

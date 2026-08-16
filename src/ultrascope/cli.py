@@ -15,6 +15,9 @@ Examples:
 
     ultrascope-dump --acquire average --average 16 --plot
         Averaged acquisition, write CSV + PNG.
+
+    ultrascope-dump --trigger-mode pulse --trigger-condition "+Width <" --trigger-width 100e-9
+        Trigger on positive pulses narrower than 100 ns.
 """
 
 from __future__ import annotations
@@ -62,6 +65,12 @@ def build_parser() -> argparse.ArgumentParser:
                       help="arm a one-shot capture and wait for the trigger")
     trig.add_argument("--trigger-timeout", type=float, default=30.0, metavar="SECONDS",
                       help="how long --single waits before giving up (default 30)")
+    trig.add_argument("--trigger-condition", metavar="COND",
+                      help="pulse/slope condition, e.g. '+Width <' or '-Slope >' "
+                           "(pulse and slope trigger modes only)")
+    trig.add_argument("--trigger-width", type=float, metavar="SECONDS",
+                      help="pulse width or slope time, 20ns..10s "
+                           "(pulse and slope trigger modes only)")
 
     acq = ap.add_argument_group("acquisition")
     acq.add_argument("--acquire", choices=["normal", "average", "peakdetect"])
@@ -153,6 +162,11 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             # --single arms the sweep itself, so don't set it twice.
             sweep=None if args.single else args.sweep,
         )
+        # Only meaningful in PULSE/SLOPE, and only after the mode is applied.
+        if args.trigger_condition is not None or args.trigger_width is not None:
+            scope.set_trigger_condition(condition=args.trigger_condition,
+                                        seconds=args.trigger_width)
+
         print(f"Trigger: {scope.trigger_mode()}, status {scope.trigger_status()}")
 
         if args.single:

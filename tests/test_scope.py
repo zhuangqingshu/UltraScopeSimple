@@ -361,3 +361,148 @@ def test_restore_of_an_empty_setup_touches_almost_nothing():
     scope, transport = make_scope({":TRIG:MODE?": "EDGE"})
     scope.restore({})
     assert sent(transport, ":CHAN") == []
+
+
+# --- timed trigger conditions (PULSE / SLOPE) -------------------------------
+# The SCPI spellings live in profile.TimedTriggerSpec and are unverified; these
+# tests pin how commands are *composed* from the spec, so correcting a spelling
+# there does not require rewriting the suite.
+
+def timed_scope(mode="PULSE"):
+    return make_scope({":TRIG:MODE?": mode})
+
+
+@pytest.mark.parametrize("mode, subtree, leaf", [
+    ("PULSE", "PULS", "WIDT"),
+    ("SLOPE", "SLOP", "TIME"),
+])
+def test_condition_and_time_go_to_the_mode_own_subtree(mode, subtree, leaf):
+    scope, transport = timed_scope(mode)
+    spec = scope.profile.timed_triggers[mode]
+    label = list(spec.conditions)[1]
+    scope.set_trigger_condition(condition=label, seconds=1e-6)
+    assert f":TRIG:{subtree}:{spec.condition_leaf} {spec.conditions[label]}" \
+        in transport.written
+    assert f":TRIG:{subtree}:{leaf} 0.000001" in transport.written
+
+
+def test_condition_writes_nothing_when_given_nothing():
+    scope, transport = timed_scope()
+    scope.set_trigger_condition()
+    assert sent(transport, ":TRIG:PULS:") == []
+
+
+def test_only_the_supplied_half_is_written():
+    scope, transport = timed_scope()
+    scope.set_trigger_condition(seconds=1e-3)
+    assert sent(transport, ":TRIG:PULS:MODE") == []
+    assert sent(transport, ":TRIG:PULS:WIDT") == [":TRIG:PULS:WIDT 0.001"]
+
+
+@pytest.mark.parametrize("mode", ["EDGE", "VIDEO", "PATTERN", "ALTERNATION"])
+def test_modes_without_a_timed_condition_say_so(mode):
+    scope, _ = timed_scope(mode)
+    assert scope.has_timed_trigger() is False
+    with pytest.raises(ScopeError, match="no width/time condition"):
+        scope.set_trigger_condition(seconds=1e-6)
+
+
+@pytest.mark.parametrize("mode", ["PULSE", "SLOPE"])
+def test_the_timed_modes_are_recognised(mode):
+    scope, _ = timed_scope(mode)
+    assert scope.has_timed_trigger() is True
+
+
+def test_a_condition_can_be_given_as_a_label_or_as_the_keyword():
+    scope, transport = timed_scope()
+    scope.set_trigger_condition(condition="+Width <")
+    scope.set_trigger_condition(condition="+LESSthan")
+    written = sent(transport, ":TRIG:PULS:MODE")
+    assert written[0] == written[1]
+
+
+def test_an_unknown_condition_is_rejected_rather_than_sent():
+    scope, transport = timed_scope()
+    with pytest.raises(ScopeError, match="Unknown trigger condition"):
+        scope.set_trigger_condition(condition="sideways")
+    assert sent(transport, ":TRIG:PULS:MODE") == []
+
+
+@pytest.mark.parametrize("seconds", [1e-9, 19e-9, 11.0, 100.0])
+def test_width_outside_the_documented_range_is_rejected(seconds):
+    # User's Guide: pulse width range 20 ns ~ 10 s.
+    scope, _ = timed_scope()
+    with pytest.raises(ScopeError):
+        scope.set_trigger_condition(seconds=seconds)
+
+
+@pytest.mark.parametrize("seconds", [20e-9, 1e-6, 10.0])
+def test_width_inside_the_documented_range_is_written(seconds):
+    scope, transport = timed_scope()
+    scope.set_trigger_condition(seconds=seconds)
+    assert len(sent(transport, ":TRIG:PULS:WIDT")) == 1
+
+
+def test_the_width_is_sent_as_a_plain_decimal():
+    # 20 ns would otherwise render as 2e-08 and be silently ignored.
+    scope, transport = timed_scope()
+    scope.set_trigger_condition(seconds=20e-9)
+    assert sent(transport, ":TRIG:PULS:WIDT") == [":TRIG:PULS:WIDT 0.00000002"]
+
+
+def test_every_condition_label_survives_the_round_trip():
+    scope, _ = timed_scope()
+    spec = scope.profile.timed_triggers["PULSE"]
+    assert len(spec.conditions) == 6      # (>, <, =) for each polarity
+    for label, keyword in spec.conditions.items():
+        assert spec.keyword_for(label) == keyword
+        assert spec.keyword_for(keyword) == keyword
+
+
+TIMED_SNAPSHOT = dict(SNAPSHOT_RESPONSES, **{
+    ":TRIG:MODE?": "PULSE",
+    ":TRIG:PULS:SOUR?": "CH1",
+    ":TRIG:PULS:SLOP?": "POSITIVE",
+    ":TRIG:PULS:SWE?": "AUTO",
+    ":TRIG:PULS:LEV?": "1.2",
+    ":TRIG:PULS:MODE?": "+LESSthan",
+    ":TRIG:PULS:WIDT?": "1e-6",
+})
+
+
+def test_snapshot_picks_up_the_condition_in_pulse_mode():
+    scope, _ = make_scope(TIMED_SNAPSHOT)
+    settings = scope.snapshot((1, 2))
+    assert settings.trigger_condition == "+LESSthan"
+    assert settings.trigger_condition_time == 1e-6
+
+
+def test_snapshot_leaves_the_condition_empty_in_edge_mode():
+    scope, _ = make_scope(SNAPSHOT_RESPONSES)
+    settings = scope.snapshot((1, 2))
+    assert settings.trigger_condition is None
+    assert settings.trigger_condition_time is None
+
+
+def test_the_condition_survives_the_setup_file_round_trip():
+    scope, _ = make_scope(TIMED_SNAPSHOT)
+    settings = scope.snapshot((1, 2))
+    assert ScopeSettings.from_dict(settings.to_dict()) == settings
+
+
+def test_restore_applies_the_condition_after_the_mode():
+    # Setting a width before the mode switch would land in the wrong subtree.
+    scope, transport = make_scope({":TRIG:MODE?": "PULSE"})
+    scope.restore({"trigger": {"mode": "PULSE", "condition": "+LESSthan",
+                               "condition_time": 1e-6}})
+    order = [c for c in transport.written
+             if c.startswith((":TRIG:MODE ", ":TRIG:PULS:WIDT"))]
+    assert order[0].startswith(":TRIG:MODE ")
+    assert order[-1].startswith(":TRIG:PULS:WIDT")
+
+
+def test_restore_of_an_edge_setup_does_not_attempt_a_condition():
+    scope, transport = make_scope({":TRIG:MODE?": "EDGE"})
+    warnings = scope.restore({"trigger": {"mode": "EDGE"}})
+    assert warnings == []
+    assert sent(transport, ":TRIG:PULS:") == []

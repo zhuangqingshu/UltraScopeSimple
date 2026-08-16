@@ -219,9 +219,38 @@ class TriggerPanel(Panel):
             .grid(row=7, column=0, columnspan=2, sticky="w")
         self.holdoff = labelled_entry(box, "Holdoff (s)", 8, on_apply)
 
+        # PULSE and SLOPE add a condition plus a duration. The group is built
+        # once and shown only for the modes that have one, so switching to EDGE
+        # cannot leave a stale width on screen.
+        self.condition_frame = ttk.Frame(box)
+        self.condition_frame.grid(row=9, column=0, columnspan=2, sticky="ew")
+        self.condition_frame.columnconfigure(1, weight=1)
+        self.condition = labelled_combo(self.condition_frame, "Condition",
+                                        (), 0, on_apply)
+        self.width = labelled_entry(self.condition_frame, "Width/Time (s)",
+                                    1, on_apply)
+        self.condition_combo = self.condition_frame.grid_slaves(row=0, column=1)[0]
+        self.condition_frame.grid_remove()
+
         self.status = tk.StringVar(value="--")
         ttk.Label(box, textvariable=self.status, foreground="#0a6")\
-            .grid(row=9, column=0, columnspan=2, sticky="w", pady=(4, 0))
+            .grid(row=10, column=0, columnspan=2, sticky="w", pady=(4, 0))
+
+    def show_conditions(self, labels: Sequence[str]) -> None:
+        """Reveal the condition group for a mode that has one, or hide it."""
+        if labels:
+            self.condition_combo["values"] = list(labels)
+            self.condition_frame.grid()
+        else:
+            self.condition_frame.grid_remove()
+            self.condition.set("")
+            self.width.set("")
+
+    def has_conditions(self) -> bool:
+        return bool(self.condition_frame.winfo_manager())
+
+    def width_seconds(self) -> Optional[float]:
+        return parse_float(self.width.get())
 
     def level_volts(self) -> Optional[float]:
         return parse_float(self.level.get())

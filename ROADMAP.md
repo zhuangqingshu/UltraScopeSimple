@@ -48,34 +48,34 @@
 
 ## 第二阶段：各触发类型的专属参数
 
-当前切到 EDGE 以外的模式只能设 source/slope/level，条件参数无处可设，等于不可用。
-实现方式是每种模式一组控件，随 Mode 切换显示对应的那组。
+- [x] **PULSE** 脉宽条件（正/负 × >、<、= 六种）+ 脉宽 20 ns ~ 10 s
+- [x] **SLOPE** 边沿时间条件（同样六种）+ 时间 20 ns ~ 10 s
+- [ ] **VIDEO** 制式（NTSC/PAL/SECAM）、行场、极性、行号（NTSC 1~525，PAL/SECAM 1~625）
+- [ ] **PATTERN**（DS1000D）两通道电平组合
+- [ ] **DURATION**（DS1000D）电平组合 + 持续时间条件
 
-| 模式 | 待补参数 |
-|------|---------|
-| PULSE | 脉宽条件 `:TRIG:PULS:MODE`（>、<、=）+ `:TRIG:PULS:WIDT` |
-| SLOPE | 边沿时间条件 `:TRIG:SLOP:MODE` + `:TRIG:SLOP:TIME` |
-| VIDEO | 制式 `:TRIG:VIDEO:STAN`（NTSC/PAL）、行场 `:MODE`、极性 `:POL` |
-| PATTERN | 两通道电平组合 `:TRIG:PATT:PATT` |
-| DURATION | 电平组合 + 持续时间条件 |
+PULSE 与 SLOPE 结构相同（六种条件 + 一个时间参数），故合为一套实现：
+`profile.TimedTriggerSpec` 描述某个模式的子树、条件表、时间参数叶子与范围，
+`Scope.set_trigger_condition()` 按它组装命令，GUI 的条件控件组随 Mode 切换显示。
+再加 VIDEO 等模式时应优先考虑能否同样用一个 spec 描述，而不是在 `scope.py` 里堆分支。
 
-调数字电路时 PULSE 优先级最高（找丢失脉冲、异常窄脉冲）。
+CLI：`--trigger-condition "+Width <" --trigger-width 100e-9`。
+GUI：Trigger 面板在 PULSE/SLOPE 下多出 Condition 与 Width/Time 两栏，切回 EDGE 自动隐藏并清空。
 
-> **动手前的阻碍**：上表的命令名（`:TRIG:PULS:MODE` 等）**未经核实**。仓库里的
-> `docs/DS1000D_E_Manual_EN.pdf` 是 User's Guide，只讲前面板操作，全文没有 SCPI 命令。
-> 而本机对拼错的命令是静默忽略的，写出来"看着对但什么也不做"的代码风险很高。
-> **应先取得 Rigol 的 *DS1000E/D Series Programming Guide* 再动手。**
+> **⚠ 命令拼写未经核实，且尚未接真机验证。**
+> 仓库里的 `docs/DS1000D_E_Manual_EN.pdf` 是 User's Guide，只讲前面板操作，全文没有
+> 任何 SCPI 命令；`:TRIG:PULS:MODE` / `:TRIG:PULS:WIDT` 等名字来自本项目早期笔记。
+> 本机对拼错的命令是**静默忽略**的，因此这批代码有"看着对但什么也不做"的可能。
+>
+> 为此所有拼写集中在 `profile.py` 的 `DS1000E_PULSE_TRIGGER` / `DS1000E_SLOPE_TRIGGER`
+> 两个对象里，其余代码只从中读取；测试断言的是"命令如何由 spec 组装"而非具体拼写。
+> **拿到 Rigol 的 *DS1000E/D Series Programming Guide* 后，核对这两处即可，无需改动别处。**
+>
+> 真机验证要点：接一个脉冲信号源，设好条件与脉宽后确认确实只在满足条件时触发；
+> 并按 `HANDOVER.md` 第 3 节的方法（**先把参数停到另一个值再写目标值**）确认写入真的生效。
 
-手册里能确定的、与命令拼写无关的范围（实现时直接用，收进 `profile.py` 主动校验）：
-
-| 参数 | 范围 |
-|------|------|
-| 脉宽 / 斜率时间 | 20 ns ~ 10 s |
-| 条件 | 正/负脉冲各 >、<、= 共六种 |
-| 视频行号 | NTSC 1~525；PAL/SECAM 1~625 |
-
-实现提示：脉宽、边沿时间都是小量级的秒，**务必经 `units.scpi_number()` 下发**，
-否则会撞上指数记法被静默忽略的坑（见 `HANDOVER.md` 第 3 节）。
+条件与脉宽已纳入配置文件格式（`trigger.condition` / `trigger.condition_time`），
+EDGE 等模式下不写入这两个键，旧配置文件照常加载。
 
 ## 第三阶段：分析能力
 

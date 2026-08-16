@@ -74,3 +74,18 @@ def test_measurement_line_marks_missing_values():
     text = format_measurements({"Vpp": 1.5, "Freq": None})
     assert "Vpp=1.5 V" in text
     assert "Freq=--" in text
+
+
+def test_timed_trigger_options_default_to_unset():
+    args = parse_args([])
+    assert args.trigger_condition is None
+    assert args.trigger_width is None
+
+
+def test_timed_trigger_options_parse():
+    args = parse_args(["--trigger-mode", "pulse",
+                       "--trigger-condition", "+Width <",
+                       "--trigger-width", "100e-9"])
+    assert args.trigger_mode == "pulse"
+    assert args.trigger_condition == "+Width <"
+    assert args.trigger_width == 100e-9

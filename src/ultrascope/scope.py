@@ -57,12 +57,17 @@ class ScopeSettings:
     trigger_sweep: Optional[str] = None
     trigger_level: Optional[float] = None
     trigger_holdoff: Optional[float] = None
+    # PULSE / SLOPE only; None everywhere else.
+    trigger_condition: Optional[str] = None
+    trigger_condition_time: Optional[float] = None
 
     # The dict form is a published file format: keep the key names and the
     # string-keyed "channels" map stable so old setup files keep loading.
     _TRIGGER_KEYS = (("source", "trigger_source"), ("slope", "trigger_slope"),
                      ("sweep", "trigger_sweep"), ("level", "trigger_level"),
-                     ("holdoff", "trigger_holdoff"))
+                     ("holdoff", "trigger_holdoff"),
+                     ("condition", "trigger_condition"),
+                     ("condition_time", "trigger_condition_time"))
 
     def to_dict(self) -> dict:
         trigger = {"mode": self.trigger_mode}
@@ -273,6 +278,55 @@ class Scope:
         limit = self.profile.trigger_level_divs * self.volt_scale(ch)
         return max(-limit, min(limit, level))
 
+    # --- timed trigger conditions (PULSE, SLOPE) ---------------------------
+
+    def timed_trigger_spec(self, mode: Optional[str] = None):
+        """The condition/duration parameters the current mode offers.
+
+        Raises if the mode has none — EDGE fires on a level, and VIDEO and the
+        pattern modes take a different shape of parameter entirely.
+        """
+        mode = (mode or self.trigger_mode()).upper()
+        spec = self.profile.timed_triggers.get(mode)
+        if spec is None:
+            supported = ", ".join(sorted(self.profile.timed_triggers))
+            raise ScopeError(
+                f"{mode} trigger has no width/time condition (only {supported} do).")
+        return mode, spec
+
+    def has_timed_trigger(self, mode: Optional[str] = None) -> bool:
+        return (mode or self.trigger_mode()).upper() in self.profile.timed_triggers
+
+    def trigger_condition(self) -> str:
+        """Which of the six +/- width conditions the mode is set to."""
+        _, spec = self.timed_trigger_spec()
+        return self.query(f":TRIG:{spec.subtree}:{spec.condition_leaf}?")
+
+    def trigger_condition_time(self) -> float:
+        """The pulse width, or the slope time, depending on the mode."""
+        _, spec = self.timed_trigger_spec()
+        return self.qfloat(f":TRIG:{spec.subtree}:{spec.time_leaf}?")
+
+    def set_trigger_condition(self, condition=None, seconds=None) -> None:
+        """Write only the condition parameters that were supplied."""
+        _, spec = self.timed_trigger_spec()
+
+        if condition is not None:
+            keyword = spec.keyword_for(str(condition))
+            if keyword is None:
+                raise ScopeError(
+                    f"Unknown trigger condition {condition!r}; expected one of "
+                    f"{list(spec.conditions)}")
+            self.write(f":TRIG:{spec.subtree}:{spec.condition_leaf} {keyword}")
+
+        if seconds is not None:
+            if not spec.time_min <= seconds <= spec.time_max:
+                raise ScopeError(
+                    f"Width/time must be between {eng(spec.time_min, 's')} and "
+                    f"{eng(spec.time_max, 's')}.")
+            self.write(f":TRIG:{spec.subtree}:{spec.time_leaf} "
+                       f"{scpi_number(seconds)}")
+
     def holdoff(self) -> float:
         return self.qfloat(":TRIG:HOLD?")
 
@@ -407,18 +461,24 @@ class Scope:
                       for ch in channels},
         )
         # Not every trigger mode exposes all of these, so gather them one by
-        # one rather than letting the first gap abandon the rest.
-        for attr, getter in (("trigger_source", self.trigger_source),
-                             ("trigger_slope", self.trigger_slope),
-                             ("trigger_sweep", self.trigger_sweep),
-                             ("trigger_level", self.trigger_level),
-                             ("trigger_holdoff", self.holdoff)):
+        # one rather than letting the first gap abandon the rest. The condition
+        # keyword keeps the instrument's own casing: the mixed case is the SCPI
+        # short form, and upper-casing it loses that.
+        for attr, getter, upper in (
+                ("trigger_source", self.trigger_source, True),
+                ("trigger_slope", self.trigger_slope, True),
+                ("trigger_sweep", self.trigger_sweep, True),
+                ("trigger_level", self.trigger_level, False),
+                ("trigger_holdoff", self.holdoff, False),
+                ("trigger_condition", self.trigger_condition, False),
+                ("trigger_condition_time", self.trigger_condition_time, False)):
             try:
                 value = getter()
             except Exception:
                 continue
-            setattr(settings, attr,
-                    value.upper() if isinstance(value, str) else value)
+            if upper and isinstance(value, str):
+                value = value.upper()
+            setattr(settings, attr, value)
         return settings
 
     def restore(self, state) -> List[str]:
@@ -468,6 +528,13 @@ class Scope:
             source=state.trigger_source, slope=state.trigger_slope,
             level=state.trigger_level, sweep=state.trigger_sweep,
             holdoff=state.trigger_holdoff))
+
+        # Only meaningful once the mode above has been applied.
+        if (state.trigger_condition is not None
+                or state.trigger_condition_time is not None):
+            attempt("trigger condition", lambda: self.set_trigger_condition(
+                condition=state.trigger_condition,
+                seconds=state.trigger_condition_time))
 
         return warnings
 

@@ -3,7 +3,8 @@
 import pytest
 
 from ultrascope.gui.state import (OptionTable, TRIGGER_SOURCES,
-                                  normalise_trigger_source)
+                                  condition_label_for, condition_labels,
+                                  normalise_trigger_source, timed_trigger_spec)
 from ultrascope.profile import DS1000E
 
 VOLTS = OptionTable(DS1000E.volt_scales, "V")
@@ -59,3 +60,42 @@ def test_every_normalised_channel_source_is_a_real_option():
 def test_an_empty_answer_does_not_crash():
     assert normalise_trigger_source("") == ""
     assert normalise_trigger_source(None) == ""
+
+
+# --- timed trigger condition labels ----------------------------------------
+
+@pytest.mark.parametrize("mode, noun", [("PULSE", "Width"), ("SLOPE", "Slope")])
+def test_timed_modes_offer_six_labelled_conditions(mode, noun):
+    labels = condition_labels(mode)
+    assert len(labels) == 6
+    assert all(noun in label for label in labels)
+    assert labels[0].startswith("+") and labels[-1].startswith("-")
+
+
+@pytest.mark.parametrize("mode", ["EDGE", "VIDEO", "PATTERN", "ALTERNATION", ""])
+def test_modes_without_a_condition_offer_no_labels(mode):
+    assert condition_labels(mode) == ()
+
+
+def test_reported_keyword_maps_back_to_its_label():
+    assert condition_label_for("PULSE", "+LESSthan") == "+Width <"
+    assert condition_label_for("SLOPE", "-GREaterthan") == "-Slope >"
+
+
+def test_label_lookup_is_case_insensitive():
+    # The instrument may echo the keyword in any case.
+    assert condition_label_for("PULSE", "+LESSTHAN") == "+Width <"
+
+
+def test_label_lookup_copes_with_nothing_reported():
+    assert condition_label_for("PULSE", "") == ""
+    assert condition_label_for("EDGE", "+LESSthan") == ""
+
+
+def test_every_label_is_selectable_in_its_own_mode():
+    # A value not in the combobox list cannot be re-selected by the user.
+    for mode in ("PULSE", "SLOPE"):
+        labels = condition_labels(mode)
+        for label in labels:
+            keyword = timed_trigger_spec(mode).conditions[label]
+            assert condition_label_for(mode, keyword) in labels

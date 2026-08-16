@@ -7,8 +7,9 @@ magic numbers inside the decode path.
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import Mapping, Tuple
+from typing import Mapping, Optional, Tuple
 
 # ":TRIG:MODE?" answers with a full word, but the command subtrees are abbreviated.
 DS1000E_TRIGGER_SUBSYS = {
@@ -33,6 +34,68 @@ DS1000E_TIME_SCALES = (
 )
 
 DS1000E_PROBE_RATIOS = (1.0, 5.0, 10.0, 50.0, 100.0, 500.0, 1000.0)
+
+
+def _timed_conditions(noun: str) -> "OrderedDict[str, str]":
+    """The six condition options a timed trigger offers.
+
+    The User's Guide lists them as "(>, <, =) positive pulse" and the same
+    three for negative, in that order.
+    """
+    return OrderedDict(
+        (f"{sign}{noun} {symbol}", f"{sign}{keyword}")
+        for sign in ("+", "-")
+        for symbol, keyword in ((">", "GREaterthan"), ("<", "LESSthan"),
+                                ("=", "EQUal"))
+    )
+
+
+@dataclass(frozen=True)
+class TimedTriggerSpec:
+    """A trigger mode that fires on a condition over a duration.
+
+    PULSE and SLOPE are the same shape: pick one of six conditions, then give
+    it a time. Only the subtree and the leaf holding the time differ.
+
+    .. warning::
+       **The SCPI spellings below are unverified.** The manual shipped in
+       ``docs/`` is the User's Guide, which documents the front panel and
+       contains no commands at all; these names come from the project's earlier
+       notes. This instrument ignores a misspelt command silently, so a wrong
+       name here looks exactly like "the setting does nothing".
+
+       Everything that builds these commands reads them from this object, so
+       checking them against a real Programming Guide is a single edit here.
+       The ranges and the condition list *are* from the User's Guide and are
+       independent of the spellings.
+    """
+
+    subtree: str
+    condition_leaf: str
+    time_leaf: str
+    conditions: Mapping[str, str]
+    # User's Guide: "Pulse Width range 20ns ~10s"; slope time is the same.
+    time_min: float = 20e-9
+    time_max: float = 10.0
+
+    def keyword_for(self, condition: str) -> Optional[str]:
+        """Accept either a display label ('+Width >') or the SCPI keyword."""
+        if condition in self.conditions:
+            return self.conditions[condition]
+        wanted = condition.strip().upper()
+        for label, keyword in self.conditions.items():
+            if wanted in (label.upper(), keyword.upper()):
+                return keyword
+        return None
+
+
+DS1000E_PULSE_TRIGGER = TimedTriggerSpec(
+    subtree="PULS", condition_leaf="MODE", time_leaf="WIDT",
+    conditions=_timed_conditions("Width"))
+
+DS1000E_SLOPE_TRIGGER = TimedTriggerSpec(
+    subtree="SLOP", condition_leaf="MODE", time_leaf="TIME",
+    conditions=_timed_conditions("Slope"))
 
 
 @dataclass(frozen=True)
@@ -63,6 +126,11 @@ class DeviceProfile:
 
     trigger_subsystems: Mapping[str, str] = field(
         default_factory=lambda: dict(DS1000E_TRIGGER_SUBSYS))
+    # Modes that take a condition plus a duration. Anything not listed here
+    # has no such parameters (EDGE) or a different shape (VIDEO, PATTERN).
+    timed_triggers: Mapping[str, TimedTriggerSpec] = field(
+        default_factory=lambda: {"PULSE": DS1000E_PULSE_TRIGGER,
+                                 "SLOPE": DS1000E_SLOPE_TRIGGER})
 
     # --- limits ---
     # The scope ignores out-of-range values silently rather than reporting an

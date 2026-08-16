@@ -154,11 +154,12 @@ USBTMC 不能被两处同时使用，而实时刷新和用户点按钮天然会�
 
 ## 5. 进度
 
-`ROADMAP.md` 第一阶段五项已完成。第二到五阶段未开始。
+`ROADMAP.md` 第一阶段五项已完成。第二阶段完成 PULSE 与 SLOPE，VIDEO / PATTERN /
+DURATION 未做。第三到五阶段未开始。
 
-第二阶段（各触发类型的专属参数）是**当前最大的功能缺口**：切到 EDGE 以外的模式只能设
-source/slope/level，PULSE 的脉宽条件、SLOPE 的时间条件等无处可设，等于那些模式不可用。
-调数字电路的话 PULSE 优先级最高。
+**PULSE / SLOPE 的 SCPI 命令拼写未经核实，也尚未接真机验证**——原因见第 8 节。
+拼写集中在 `profile.py` 的 `DS1000E_PULSE_TRIGGER` / `DS1000E_SLOPE_TRIGGER`，
+拿到编程手册后核对这两处即可。
 
 ## 6. 验证状态
 
@@ -184,6 +185,9 @@ source/slope/level，PULSE 的脉宽条件、SLOPE 的时间条件等无处可�
 1. GUI 其余交互：连接/断开、live 刷新、Run/Stop/Auto/Single/Force、触发电平拖拽与滚轮
    微调、Save/Load setup、关窗是否交还面板
 2. CLI 的 `--single`（等待触发）与 `--acquire average`
+3. **PULSE / SLOPE 触发条件**——命令拼写未核实，需接脉冲信号源验证：设好条件与脉宽后
+   确认确实只在满足条件时触发。验证时务必用第 3 节那条方法（先把参数停到另一个值再写
+   目标值），否则读回一致说明不了任何问题
 
 **已验证为损坏**：深存储 1M 点读取。见下。
 

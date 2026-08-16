@@ -45,6 +45,30 @@ def probe_labels(profile=None) -> tuple:
     return tuple(f"{int(r)}X" for r in ratios)
 
 
+def timed_trigger_spec(mode: str, profile=None):
+    """The PULSE/SLOPE condition spec for a mode, or None if it has none."""
+    from ..profile import DEFAULT_PROFILE
+
+    return (profile or DEFAULT_PROFILE).timed_triggers.get((mode or "").upper())
+
+
+def condition_labels(mode: str, profile=None) -> tuple:
+    spec = timed_trigger_spec(mode, profile)
+    return tuple(spec.conditions) if spec else ()
+
+
+def condition_label_for(mode: str, reported: str, profile=None) -> str:
+    """Map the keyword the instrument reports back onto its display label."""
+    spec = timed_trigger_spec(mode, profile)
+    if not spec or not reported:
+        return ""
+    keyword = spec.keyword_for(reported)
+    for label, candidate in spec.conditions.items():
+        if candidate == keyword:
+            return label
+    return ""
+
+
 ACQ_TYPES = ("NORMAL", "AVERAGE", "PEAKDETECT")
 AVERAGE_COUNTS = ("2", "4", "8", "16", "32", "64", "128", "256")
 MEMORY_DEPTHS = ("NORMAL", "LONG")

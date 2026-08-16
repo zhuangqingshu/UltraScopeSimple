@@ -19,14 +19,16 @@ pip install -e ".[gui]"
 ```
 src/ultrascope/
   transport.py   VISA 会话（唯一直接依赖 pyvisa 的模块）
-  profile.py     机型参数：码值换算、分格数、量程档位
+  profile.py     机型参数：码值换算、分格数、量程档位、各触发模式的参数规格
   waveform.py    488.2 块解析、码值 → 电压、Waveform 值对象
   scope.py       Scope —— SCPI 指令门面
   export.py      CSV / PNG 落盘
+  setup_file.py  配置文件读写
+  units.py       eng() 显示格式化、scpi_number() 下发格式化
   cli.py         命令行工具
   gui/           Tkinter 界面（worker / state / panels / plot / app）
 tests/           不接硬件的单元测试
-docs/            架构文档与官方 SCPI 手册
+docs/            架构文档与官方 User's Guide
 ```
 
 设计说明见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)，
@@ -41,7 +43,8 @@ ultrascope-gui
 - **Connection**：刷新并选择 VISA 资源后 Connect（若无法识别，先用官方 UltraSigma 确认示波器可被电脑看到）
 - **Acquisition**：Run / Stop / Auto / Single / Force，Live 实时刷新，平均与深存储模式
 - **Channel 1/2**：显示开关、Active 单选、探头衰减比、V/div、耦合、垂直位移
-- **Horizontal / Trigger**：时基与水平位移；触发模式、源、斜率、扫描、耦合、电平、释抑
+- **Horizontal / Trigger**：时基与水平位移；触发模式、源、斜率、扫描、耦合、电平、释抑。
+  PULSE / SLOPE 模式下多出 Condition（六种条件）与 Width/Time 两栏，切回其他模式自动隐藏
 - **波形图交互**：拖动红色虚线调触发电平（双击定位，滚轮按 1/5 分度微调）；
   在图上拖动可平移时基与垂直位移（作用于 Active 选中的通道）
 - **Setup**：保存/加载完整配置（JSON），与 CLI 的 `--save-setup` / `--load-setup` 通用
@@ -67,6 +70,9 @@ ultrascope-dump --acquire average --average 16 --plot
 # 打印各通道 Vpp/Vrms/频率等测量值
 ultrascope-dump --measure
 
+# 触发在宽度小于 100 ns 的正脉冲上（查丢失脉冲/异常窄脉冲）
+ultrascope-dump --trigger-mode pulse --trigger-condition "+Width <" --trigger-width 100e-9
+
 # 保存当前配置，之后随时还原
 ultrascope-dump --save-setup bench.json
 ultrascope-dump --load-setup bench.json
@@ -89,6 +95,8 @@ ultrascope-dump --load-setup bench.json
 | `--probe` | 探头衰减比，1/5/10/50/100/500/1000 |
 | `--offset` | 垂直位移（V），作用于 `--channels` |
 | `--position` | 水平位移（s） |
+| `--trigger-condition` | 脉宽/斜率条件，如 `"+Width <"`（仅 PULSE/SLOPE 模式） |
+| `--trigger-width` | 脉宽或斜率时间，20 ns–10 s（仅 PULSE/SLOPE 模式） |
 | `--save-setup` | 把当前完整状态写成 JSON 后退出 |
 | `--load-setup` | 先套用 JSON 配置，再应用其他选项 |
 
@@ -129,6 +137,10 @@ pytest
 静默忽略——设置看起来"没反应"。因此所有浮点写入都经 `units.scpi_number()` 格式化。
 修复前，2 ns/div 到 50 µs/div 共 14 个时基档位设不进去且不报错。
 
+
+**PULSE / SLOPE 触发条件尚未在真机上验证。** 这两个模式的 SCPI 命令拼写来自项目早期
+笔记，仓库里的手册是 User's Guide、不含命令参考，无从核对；而本机对拼错的命令是静默
+忽略的。功能可用性待验，详见 [ROADMAP.md](ROADMAP.md) 第二阶段。
 
 **深存储采集拿不到完整 1M 点。** 实测（DS1102E 固件 00.04.02.01.00）：RAW 模式下
 仪器的数据块头无论存储深度都声明 1 048 576 字节，但实际只发出约 12 K 就断流。

@@ -206,6 +206,14 @@ class App(ttk.Frame):
                 var.set(value.upper())
         if settings.trigger_holdoff is not None:
             self.trigger.holdoff.set(f"{settings.trigger_holdoff:.6g}")
+
+        mode = settings.trigger_mode.upper()
+        self.trigger.show_conditions(st.condition_labels(mode))
+        if settings.trigger_condition is not None:
+            self.trigger.condition.set(
+                st.condition_label_for(mode, settings.trigger_condition))
+        if settings.trigger_condition_time is not None:
+            self.trigger.width.set(f"{settings.trigger_condition_time:.6g}")
         if settings.trigger_level is not None:
             self._show_level(settings.trigger_level)
 
@@ -311,6 +319,9 @@ class App(ttk.Frame):
 
     def _apply_trigger_mode(self) -> None:
         mode = self.trigger.mode.get()
+        # Show the right controls straight away; the snapshot that comes back
+        # then fills in whatever the instrument reports for them.
+        self.trigger.show_conditions(st.condition_labels(mode))
 
         def job(scope):
             scope.set_trigger_mode(mode)
@@ -329,9 +340,17 @@ class App(ttk.Frame):
         coupling = self.trigger.coupling.get() or None
         holdoff = self.trigger.holdoff_seconds()
 
-        self._do(lambda s: s.set_trigger(source=source, slope=slope, level=level,
-                                         coupling=coupling, sweep=sweep,
-                                         holdoff=holdoff))
+        condition = self.trigger.condition.get() or None
+        width = self.trigger.width_seconds()
+        timed = self.trigger.has_conditions()
+
+        def job(scope):
+            scope.set_trigger(source=source, slope=slope, level=level,
+                              coupling=coupling, sweep=sweep, holdoff=holdoff)
+            if timed and (condition is not None or width is not None):
+                scope.set_trigger_condition(condition=condition, seconds=width)
+
+        self._do(job)
 
     # ---------------------------------------------------------- trigger level
 

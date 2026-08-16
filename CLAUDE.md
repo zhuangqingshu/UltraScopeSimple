@@ -25,7 +25,7 @@ cli.py / gui/   →  scope.py  →  waveform.py + profile.py  →  transport.py
 ```
 
 - `transport.py` — **the only module that imports pyvisa.** `Transport` protocol, `PyVisaTransport`, and `FakeTransport` for tests. Timeout changes go through the `timeout(ms)` context manager, never by assigning to the device.
-- `profile.py` — `DeviceProfile` holds every per-model hardware fact (code inversion/centre/codes-per-div, horizontal divisions, scale tables, trigger subtree map, average limits). New model = new profile, not edits to the decode path.
+- `profile.py` — `DeviceProfile` holds every per-model hardware fact (code inversion/centre/codes-per-div, horizontal divisions, scale tables, trigger subtree map, per-mode trigger parameter specs, limits). New model = new profile, not edits to the decode path.
 - `waveform.py` — pure functions `parse_block` / `decode` / `time_axis` plus the `Waveform` value object. No instrument access; this is the most test-covered code.
 - `scope.py` — `Scope` SCPI facade, built on a `Transport` + `DeviceProfile`. `Scope.connect()` is the convenience constructor. `snapshot()` returns a `ScopeSettings` the GUI mirrors onto its panels.
 - `gui/` — `worker.py` (the one thread allowed to touch the instrument), `state.py` (combobox option tables), `panels.py`, `plot.py`, `app.py` (assembly + `(tag, kind, payload)` dispatch to `_on_<tag>`).
@@ -43,6 +43,7 @@ cli.py / gui/   →  scope.py  →  waveform.py + profile.py  →  transport.py
 - The instrument reports no per-sample timing: the time axis spans 12 horizontal divisions centred on the time offset.
 - Deep-memory (`points="raw"`) reads only work while acquisition is STOPPED and need `TIMEOUT_RAW_MS` (120 s); 1M-point reads are slow. `normal` is 600 displayed points.
 - `:TRIG:MODE?` returns a full word but the command subtrees are abbreviated — go through `Scope.trigger_subsys()`, never interpolate the mode. ALTERNATION has no sweep setting.
+- **PULSE/SLOPE command spellings in `profile.py` are unverified and untested on hardware.** The bundled manual is the User's Guide and contains no SCPI reference. Every spelling lives in `DS1000E_PULSE_TRIGGER`/`DS1000E_SLOPE_TRIGGER` so a Programming Guide check is a one-place edit; tests assert command *composition*, not spelling.
 - Measurements return a >1e37 sentinel when unavailable; `measure()` maps those to `None`.
 - Average count is limited to 2–256; holdoff to 100 ns – 1.5 s; the trigger level to ±6 divisions. All three are ignored silently out of range, so they are range-checked in `profile.py`/`scope.py`.
 - The USB driver comes from official UltraSigma software; VISA enumeration finds nothing without it.
