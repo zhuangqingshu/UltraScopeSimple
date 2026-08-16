@@ -1,5 +1,7 @@
 # UltraScopeSimple
 
+[![tests](https://github.com/zhuangqingshu/UltraScopeSimple/actions/workflows/test.yml/badge.svg)](https://github.com/zhuangqingshu/UltraScopeSimple/actions/workflows/test.yml)
+
 为 Rigol DS1102E / DS1000D-E 系列示波器编写的 Python 采集与绘图工具集，作为 UltraScope 的轻量替代。提供命令行导出与实时 GUI 显示两个入口，共用同一套仪器通信层。
 
 基于官方软件 **UltraSigma** 开发：本工具依赖 UltraSigma 安装的 USB 驱动程序（Rigol USBTMC）使示波器可被电脑识别为 VISA 仪器，开发过程中也参考了 UltraSigma 的 SCPI 命令交互方式。若示波器无法被识别，请先安装 UltraSigma（见 `官方软件/` 目录，未随仓库分发）。
@@ -18,7 +20,8 @@ pip install -e ".[gui]"
 
 ```
 src/ultrascope/
-  transport.py   VISA 会话（唯一直接依赖 pyvisa 的模块）
+  transport.py   VISA 会话（采集路径上唯一依赖 pyvisa 的模块）
+  discovery.py   VISA 资源枚举（另一处依赖 pyvisa 的地方）
   profile.py     机型参数：码值换算、分格数、量程档位、各触发模式的参数规格
   waveform.py    488.2 块解析、码值 → 电压、Waveform 值对象
   scope.py       Scope —— SCPI 指令门面
@@ -141,6 +144,10 @@ pytest
 ```
 
 测试用 `FakeTransport` 回放预置的 SCPI 应答，覆盖码值解码、时间轴、触发子系统路由、"未传参即不下发"契约与 CLI 参数解析，**不需要接示波器**。仪器层以上（真实 VISA 通信、GUI 交互）仍需接真机手动验证。
+
+`tests/test_layering.py` 把架构文档里的分层规则变成可执行检查：用 `ast` 读源码，确认依赖方向只朝下、pyvisa 只出现在 `transport.py` / `discovery.py`、tkinter 与 matplotlib 不进仪器层、`import ultrascope` 不会拖进 GUI 依赖。
+
+每次 push 与 PR 由 GitHub Actions 在 Python 3.8/3.10/3.12（Linux）与 3.12（Windows）上跑同一套测试，Linux 侧用 `xvfb` 提供虚拟显示，好让 GUI 测试真的执行而不是被 skip；另有一个 job 只装核心依赖，验证不装 matplotlib 时命令行仍然可用。CI 机器上没有示波器，因此它守的是"以前能用的现在还能用"，真机验证项另见 [HANDOVER.md](HANDOVER.md)。
 
 ## 注意事项
 

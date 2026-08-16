@@ -24,7 +24,7 @@ Strictly one-directional layering — see [docs/ARCHITECTURE.md](docs/ARCHITECTU
 cli.py / gui/   →  scope.py  →  waveform.py + profile.py  →  transport.py
 ```
 
-- `transport.py` — **the only module that imports pyvisa.** `Transport` protocol, `PyVisaTransport`, and `FakeTransport` for tests. Timeout changes go through the `timeout(ms)` context manager, never by assigning to the device.
+- `transport.py` — **the only module that imports pyvisa in the capture path** (`discovery.py` also does, for resource enumeration; `tests/test_layering.py` asserts nothing else does). `Transport` protocol, `PyVisaTransport`, and `FakeTransport` for tests. Timeout changes go through the `timeout(ms)` context manager, never by assigning to the device.
 - `profile.py` — `DeviceProfile` holds every per-model hardware fact (code inversion/centre/codes-per-div, horizontal divisions, scale tables, trigger subtree map, per-mode trigger parameter specs, limits). New model = new profile, not edits to the decode path.
 - `waveform.py` — pure functions `parse_block` / `decode` / `time_axis` plus the `Waveform` value object. No instrument access; this is the most test-covered code. `parse_block` rejects a short transfer rather than truncating: in RAW mode the scope declares 1M bytes and sends ~12K.
 - `analysis.py` — local measurement over a captured `Waveform` (cursor readings, interpolated sampling, FFT spectrum, trace parameters). Pure functions, no SCPI, so these features work while disconnected.

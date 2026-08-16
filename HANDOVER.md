@@ -103,7 +103,8 @@ cli.py / gui/  →  scope.py  →  waveform.py + profile.py  →  transport.py
 
 ```
 src/ultrascope/
-  transport.py   唯一 import pyvisa 的模块。Transport 协议 + PyVisaTransport + FakeTransport
+  transport.py   采集路径上唯一 import pyvisa 的模块。Transport 协议 + PyVisaTransport + FakeTransport
+  discovery.py   VISA 资源枚举，另一处 import pyvisa 的地方（延迟到函数里）
   profile.py     DeviceProfile：码值换算、分格数、量程/探头档位、各项范围上下限
   waveform.py    纯函数 parse_block / decode / time_axis + Waveform 值对象
   scope.py       Scope —— SCPI 门面；ScopeSettings —— 状态快照与配置文件格式
@@ -115,9 +116,13 @@ src/ultrascope/
   gui/           worker / state / panels / plot / app
 ```
 
-**`transport.py` 是唯一碰 pyvisa 的地方**，这条约束是整套测试能脱离硬件跑起来的前提：
+**只有 `transport.py` 与 `discovery.py` 碰 pyvisa**，这条约束是整套测试能脱离硬件跑起来的前提：
 `FakeTransport` 回放预置的 SCPI 应答和构造好的 488.2 数据块，于是码值解码、触发子系统路由、
 "未传参即不下发"契约、配置文件往返都能离线验证。
+
+这条约束以及整个分层方向，现在由 `tests/test_layering.py` 静态检查（用 `ast` 读源码，
+连函数内部的延迟 import 也算），不再只写在文档里。新增模块必须在该文件的 `LAYERS` 里
+排好层级，否则测试直接报错——这是有意的，免得新模块悄悄游离在规则之外。
 
 **`profile.py` 收编所有机型相关的硬件常量**。将来支持带 `:WAV:PRE?` 的新机型，应该是加一份
 profile，而不是去改 `waveform.decode()`。

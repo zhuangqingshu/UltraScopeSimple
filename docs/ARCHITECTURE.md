@@ -344,3 +344,30 @@ ultrascope-gui
       最后 7（深存储，需另找途径）
 
 GUI 部分必须接真实示波器手动点击——自动化测试只覆盖到仪器层以下，冒烟测试只证明控件能建起来、显示路径不报错，**不能证明 SCPI 交互正确**。
+
+### 分层规则已可执行
+
+本文第 3 节的依赖方向、以及"pyvisa 只出现在仪器层"这条约束，原先只是文档里的说明。
+`tests/test_layering.py` 现在用 `ast` 静态检查每个模块的 import（含函数内部的延迟
+import），断言四件事：
+
+1. 除 `transport.py`、`discovery.py` 外无人 import pyvisa；
+2. tkinter / matplotlib 不进仪器层（`export.py` 的 PNG 分支例外，且是延迟 import）；
+3. 依赖只朝下——模块按 `LAYERS` 排层，引用更高层直接报错；
+4. `import ultrascope` 不会拖进 matplotlib、tkinter 或 pyvisa（子进程验证）。
+
+新增模块必须在 `LAYERS` 里排好位置，否则 `test_every_module_is_covered_by_a_layer`
+报错。这是有意为之：默认放行会让规则随时间失效。
+
+规则本身也是这样被发现失准的——写这组测试时才注意到 `discovery.py` 同样 import
+pyvisa，而三处文档都写着"transport.py 是唯一"。
+
+### 持续集成
+
+`.github/workflows/test.yml`：push 与 PR 触发，Python 3.8 / 3.10 / 3.12（Linux）与
+3.12（Windows）各跑一遍全部 325 项测试。Linux 侧经 `xvfb-run` 提供虚拟显示，并设
+`ULTRASCOPE_REQUIRE_TK=1` 把"没有显示就跳过"变成硬失败——否则 Tk 或 xvfb 坏掉时
+GUI 覆盖会静默消失而 CI 仍是绿的。另有 `minimal` job 只装核心依赖，验证 matplotlib
+确实是可选的。
+
+CI 机器上没有示波器，所以它守的是回归，**消不掉上面任何一条真机待验项**。

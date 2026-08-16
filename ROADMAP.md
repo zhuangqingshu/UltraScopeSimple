@@ -137,7 +137,10 @@ EDGE 等模式下不写入这两个键，旧配置文件照常加载。
 - **本地缩放平移** — matplotlib 工具栏，框选放大查看细节，不改示波器设置
 - **快捷键** — 空格 Run/Stop、S 单次、Ctrl+S 存盘
 - **暗色主题** — 目前仅绘图区为深色，控制面板仍是系统配色
-- **CI** — 仓库已有 113 项离线测试且不需要硬件，接一个 GitHub Actions 跑 pytest 的成本很低
+- ~~**CI**~~ — 已完成。`.github/workflows/test.yml` 在每次 push 与 PR 上跑全部 325 项离线测试，
+  覆盖 Python 3.8/3.10/3.12（Linux，`xvfb` 提供虚拟显示让 GUI 测试真的执行）与 3.12（Windows）；
+  另有 `minimal` job 只装核心依赖，验证不装 matplotlib 时 CLI 仍可用。
+  同时新增 `tests/test_layering.py`，把架构分层规则从文档变成静态检查
 
 ## 存疑项
 

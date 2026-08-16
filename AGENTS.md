@@ -13,7 +13,7 @@ Python package for Rigol DS1102E / DS1000D-E oscilloscopes. CLI + Tkinter GUI ov
 
 Layering is strictly one-directional: `cli.py`/`gui/` → `scope.py` → `waveform.py` + `profile.py` → `transport.py`.
 
-- `transport.py` — the only module importing pyvisa. `Transport` protocol + `PyVisaTransport` + `FakeTransport`. Timeouts change via the `timeout(ms)` context manager.
+- `transport.py` — the only module importing pyvisa in the capture path (`discovery.py` also does, to enumerate resources; `tests/test_layering.py` enforces the rest). `Transport` protocol + `PyVisaTransport` + `FakeTransport`. Timeouts change via the `timeout(ms)` context manager.
 - `profile.py` — `DeviceProfile` holds every per-model hardware fact, including the PULSE/SLOPE condition specs. New model = new profile, not edits to the decode path.
 - `waveform.py` — pure `parse_block` / `decode` / `time_axis` + the `Waveform` value object. `parse_block` rejects short transfers rather than truncating.
 - `analysis.py` — local measurement over a `Waveform` (cursors, sampling, FFT, trace parameters). No SCPI, so it works while disconnected.

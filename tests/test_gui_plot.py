@@ -5,6 +5,7 @@ handlers are exercised through plain namespaces standing in for matplotlib
 events.
 """
 
+import os
 import tkinter as tk
 from types import SimpleNamespace
 
@@ -22,6 +23,11 @@ def root():
     try:
         window = tk.Tk()
     except tk.TclError as exc:  # pragma: no cover - headless CI
+        # On a developer machine a missing display is a reason to skip. In CI
+        # it means the coverage silently vanished, so ULTRASCOPE_REQUIRE_TK
+        # turns the skip into a failure.
+        if os.environ.get("ULTRASCOPE_REQUIRE_TK"):
+            pytest.fail(f"ULTRASCOPE_REQUIRE_TK set but Tk is unusable: {exc}")
         pytest.skip(f"no display for Tk: {exc}")
     window.withdraw()
     yield window

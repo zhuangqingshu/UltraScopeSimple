@@ -1,0 +1,85 @@
+name: tests
+
+# 本仓库的测试全部不接硬件：FakeTransport 回放 SCPI 应答，分析层是纯函数。
+# 因此 CI 能覆盖仪器层以上的全部逻辑；真机相关项见 HANDOVER.md 第 6 节。
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: pytest (Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # pyproject 声明 requires-python = ">=3.8"；下界和上界都要跑到。
+          # setup-python 在 ubuntu-24.04 上不再提供 3.8，故下界固定用 22.04。
+          - {os: ubuntu-22.04, python: "3.8"}
+          - {os: ubuntu-latest, python: "3.10"}
+          - {os: ubuntu-latest, python: "3.12"}
+          - {os: windows-latest, python: "3.12"}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: 安装
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[gui,test]"
+
+      # GUI 测试要建一个隐藏的 Tk root。没有 DISPLAY 时它们会自行 skip，
+      # 但那样等于不测——用虚拟 X 服务器让它们真的跑起来。
+      # ULTRASCOPE_REQUIRE_TK 让"没有显示就跳过"变成硬失败：否则 Tk 或 xvfb
+      # 坏掉时，GUI 覆盖会静默消失而 CI 仍是绿的。-rs 列出所有 skip 原因。
+      - name: pytest (Linux, 虚拟显示)
+        if: runner.os == 'Linux'
+        env:
+          ULTRASCOPE_REQUIRE_TK: "1"
+        run: xvfb-run -a python -m pytest -q -rs
+
+      - name: pytest (Windows)
+        if: runner.os == 'Windows'
+        env:
+          ULTRASCOPE_REQUIRE_TK: "1"
+        run: python -m pytest -q -rs
+
+  minimal:
+    name: 不装 GUI 依赖也能用
+    runs-on: ubuntu-latest
+    # matplotlib 是 [gui] 可选依赖。命令行导出 CSV 不该需要它，
+    # 而这一点只有在没装它的环境里才验证得了。
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 仅安装核心依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: matplotlib 确实不在
+        run: |
+          python - <<'PY'
+          import importlib.util, sys
+          if importlib.util.find_spec("matplotlib") is not None:
+              sys.exit("matplotlib 被装上了，这个 job 就失去意义了")
+          PY
+
+      - name: 导入与命令行入口可用
+        run: |
+          python -c "import ultrascope; from ultrascope import Scope, save_csv, load_csv"
+          python -m ultrascope.cli --help > /dev/null
