@@ -173,6 +173,22 @@ class PlotCanvas:
             half = FLAT_TRACE_HALF_SPAN   # a DC level has no extent of its own
         return centre - half, centre + half
 
+    def show_local_measurements(self, wave: Optional[Waveform],
+                                channel: Optional[int]) -> None:
+        """Parameters computed here rather than asked of the instrument."""
+        rows = (analysis.measurements(wave, channel)
+                if wave is not None and channel is not None else {})
+        if not rows:
+            self.measurements.set("")
+            return
+        cells = [f"{label}={eng(value, unit) if value is not None else '--':>10}"
+                 for label, value, unit in rows.values()]
+        # Two rows keep the dozen readings legible under the plot.
+        half = (len(cells) + 1) // 2
+        first = f"CH{channel} local  " + "  ".join(cells[:half])
+        second = " " * 10 + "  ".join(cells[half:])
+        self.measurements.set(first + "\n" + second)
+
     def show_measurements(self, stats) -> None:
         lines = []
         for ch, values in sorted(stats.items()):

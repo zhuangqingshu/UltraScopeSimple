@@ -110,7 +110,7 @@ src/ultrascope/
   export.py      CSV / PNG 落盘
   setup_file.py  配置文件读写
   units.py       eng() 显示格式化、scpi_number() 下发格式化
-  analysis.py    本地分析：光标读数、插值取样、FFT 频谱（纯函数，不碰仪器）
+  analysis.py    本地分析：光标读数、插值取样、FFT 频谱、参数测量（纯函数，不碰仪器）
   cli.py         argparse 命令行
   gui/           worker / state / panels / plot / app
 ```
@@ -157,11 +157,15 @@ USBTMC 不能被两处同时使用，而实时刷新和用户点按钮天然会�
 ## 5. 进度
 
 `ROADMAP.md` 第一阶段五项已完成。第二阶段完成 PULSE 与 SLOPE，VIDEO / PATTERN /
-DURATION 未做。第三阶段完成光标测量与 FFT 频谱。第四、五阶段未开始。
+DURATION 未做。第三阶段完成光标测量、FFT 频谱与本地参数测量；参考波形与余辉未做。第四、五阶段未开始。
 
 **光标测量与 FFT 都是纯本地计算**（`analysis.py` + `gui/plot.py`），完全不走 SCPI，
 所以没有验证债，断开连接也能用（`App.ALWAYS_ENABLED` 让这两个面板不随连接状态禁用）。
-第三阶段其余项（更多测量、参考波形、余辉）性质相同，在等硬件时是最划算的方向。
+第三阶段其余项（参考波形、余辉）性质相同，在等硬件时是最划算的方向。
+
+参数测量刻意选了**本地计算**而非调用仪器的 22 种自动测量：后者要新增一批无从核实的
+SCPI 命令名。代价是分辨率——屏幕记录 600 点，极短的边沿量不出来，那种情况用
+`Scope.measure()` 问仪器。GUI 的 Measurements 面板可在两者间切换。
 
 FFT 的一个前提要记住：**仪器不报时标，采样率是由合成时间轴反推的**
 （600 点 / (12 × 时基)）。那是屏幕抽取后的数据，远低于真实采集率，所以频谱反映的是

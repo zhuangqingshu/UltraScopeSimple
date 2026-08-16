@@ -5,6 +5,7 @@ import pytest
 
 from ultrascope.analysis import (DEFAULT_WINDOW, OFF, TIME, VOLTAGE, WINDOWS,
                                  cursor_readings, default_cursor_positions,
+                                 crossings, levels, measurements,
                                  nearest_cursor, sample_at, sample_rate,
                                  spectrum)
 from ultrascope.profile import DS1000E
@@ -235,3 +236,184 @@ def test_a_signal_close_to_dc_is_still_found():
     spec = spectrum(sine_wave(frequency=500.0, amplitude=1.0), 1, "rectangular")
     frequency, _volts = spec.peak()
     assert frequency == pytest.approx(500.0, abs=spec.resolution)
+
+
+# --- trace parameters -------------------------------------------------------
+
+FINE = 4000          # enough samples that quantisation does not dominate
+
+
+def axis(npoints=FINE):
+    return time_axis(npoints, 1e-3, 0.0, DS1000E)
+
+
+def trapezoid(t, period, rise, duty=0.5, low=0.0, high=5.0):
+    """A pulse train whose edges take exactly ``rise`` seconds."""
+    phase = np.mod(t, period)
+    up = np.clip(phase / rise, 0, 1)
+    down = np.clip((phase - duty * period) / rise, 0, 1)
+    return low + (high - low) * np.clip(up - down, 0, 1)
+
+
+def measure(volts, t=None):
+    t = axis(len(volts)) if t is None else t
+    wave = Waveform(t=t, channels={1: volts}, timebase=1e-3, time_offset=0.0)
+    return {k: v for k, (_, v, _) in measurements(wave, 1).items()}
+
+
+# --- levels ---
+
+def test_levels_find_where_the_samples_settle_not_the_extremes():
+    t = axis()
+    volts = trapezoid(t, 1e-3, 1e-9, low=0.0, high=5.0)
+    lvl = levels(volts)
+    assert lvl.top == pytest.approx(5.0, abs=0.01)
+    assert lvl.base == pytest.approx(0.0, abs=0.01)
+    assert lvl.amplitude == pytest.approx(5.0, abs=0.02)
+
+
+def test_an_overshoot_does_not_drag_the_top_up_with_it():
+    # Timing an edge to 90% of the *peak* rather than the settled level would
+    # read short, so top must ignore the spike.
+    t = axis()
+    volts = trapezoid(t, 2e-3, 1e-9)
+    volts = volts + 1.0 * (np.mod(t, 2e-3) < 20e-6)   # a brief spike to 6 V
+    lvl = levels(volts)
+    assert lvl.top == pytest.approx(5.0, abs=0.05)
+    assert lvl.maximum == pytest.approx(6.0, abs=0.05)
+
+
+def test_reference_levels_are_fractions_of_the_amplitude():
+    lvl = levels(trapezoid(axis(), 1e-3, 1e-9, low=1.0, high=3.0))
+    assert lvl.reference(0.0) == pytest.approx(1.0, abs=0.02)
+    assert lvl.reference(0.5) == pytest.approx(2.0, abs=0.02)
+    assert lvl.reference(1.0) == pytest.approx(3.0, abs=0.02)
+
+
+def test_a_flat_trace_has_equal_levels_and_no_amplitude():
+    lvl = levels(np.full(100, 2.5))
+    assert lvl.top == lvl.base == 2.5
+    assert lvl.amplitude == 0.0
+
+
+def test_an_empty_trace_has_no_levels():
+    assert levels(np.array([])) is None
+
+
+# --- crossings ---
+
+def test_a_crossing_is_interpolated_between_samples():
+    # Snapping to the nearest sample would quantise every timing measurement.
+    t = np.array([0.0, 1.0])
+    assert crossings(t, np.array([0.0, 10.0]), 2.5) == pytest.approx([0.25])
+
+
+def test_crossings_can_be_filtered_by_direction():
+    t = np.linspace(0, 3, 4)
+    volts = np.array([0.0, 10.0, 0.0, 10.0])
+    assert len(crossings(t, volts, 5.0, rising=True)) == 2
+    assert len(crossings(t, volts, 5.0, rising=False)) == 1
+    assert len(crossings(t, volts, 5.0)) == 3
+
+
+def test_a_trace_that_never_reaches_the_level_has_no_crossings():
+    assert crossings(np.linspace(0, 1, 10), np.zeros(10), 5.0) == []
+
+
+# --- timing ---
+
+def test_rise_time_measures_the_ten_to_ninety_transition():
+    # A linear ramp of 100 us spends exactly 80 us between 10% and 90%.
+    t = axis()
+    volts = trapezoid(t, 4e-3, 100e-6)
+    assert measure(volts, t)["Rise"] == pytest.approx(80e-6, rel=0.02)
+
+
+def test_fall_time_matches_a_symmetric_edge():
+    t = axis()
+    volts = trapezoid(t, 4e-3, 100e-6)
+    assert measure(volts, t)["Fall"] == pytest.approx(80e-6, rel=0.02)
+
+
+def test_frequency_and_period_agree():
+    t = axis()
+    result = measure(trapezoid(t, 1e-3, 1e-6), t)
+    assert result["Period"] == pytest.approx(1e-3, rel=0.02)
+    assert result["Freq"] == pytest.approx(1000.0, rel=0.02)
+
+
+@pytest.mark.parametrize("duty", [0.25, 0.5, 0.75])
+def test_duty_cycle_tracks_the_pulse_train(duty):
+    t = axis()
+    result = measure(trapezoid(t, 1e-3, 1e-6, duty=duty), t)
+    assert result["Duty"] == pytest.approx(duty * 100, abs=1.0)
+
+
+def test_positive_and_negative_widths_fill_the_period():
+    t = axis()
+    result = measure(trapezoid(t, 1e-3, 1e-6, duty=0.3), t)
+    assert result["+Width"] == pytest.approx(0.3e-3, rel=0.05)
+    assert result["-Width"] == pytest.approx(0.7e-3, rel=0.05)
+
+
+def test_a_sine_reports_the_frequency_it_was_built_with():
+    t = axis()
+    result = measure(2.0 * np.sin(2 * np.pi * 1000 * t), t)
+    assert result["Freq"] == pytest.approx(1000.0, rel=0.01)
+    assert result["Duty"] == pytest.approx(50.0, abs=1.0)
+
+
+# --- amplitude ---
+
+def test_a_clean_trace_reports_no_overshoot():
+    # The histogram bin centre alone used to report most of a percent here.
+    t = axis()
+    result = measure(trapezoid(t, 1e-3, 1e-6), t)
+    assert result["Over"] == pytest.approx(0.0, abs=0.2)
+    assert result["Pre"] == pytest.approx(0.0, abs=0.2)
+
+
+def test_overshoot_is_reported_as_a_percentage_of_amplitude():
+    t = axis()
+    volts = trapezoid(t, 2e-3, 1e-9)
+    volts = volts + 0.5 * (np.mod(t, 2e-3) < 20e-6)   # 0.5 V over a 5 V step
+    assert measure(volts, t)["Over"] == pytest.approx(10.0, abs=1.5)
+
+
+def test_rms_and_mean_of_a_sine():
+    t = axis()
+    result = measure(2.0 * np.sin(2 * np.pi * 1000 * t), t)
+    assert result["Vrms"] == pytest.approx(2.0 / np.sqrt(2), rel=0.02)
+    assert result["Vavg"] == pytest.approx(0.0, abs=0.05)
+
+
+def test_peak_to_peak_uses_the_extremes_not_the_settled_levels():
+    t = axis()
+    volts = trapezoid(t, 2e-3, 1e-9)
+    volts = volts + 1.0 * (np.mod(t, 2e-3) < 20e-6)
+    result = measure(volts, t)
+    assert result["Vpp"] == pytest.approx(6.0, abs=0.05)
+    assert result["Vamp"] == pytest.approx(5.0, abs=0.1)
+
+
+# --- degenerate input ---
+
+def test_a_flat_trace_reports_no_timing_rather_than_nonsense():
+    result = measure(np.full(500, 1.0))
+    assert result["Freq"] is None
+    assert result["Rise"] is None
+    assert result["Duty"] is None
+
+
+def test_an_absent_channel_measures_nothing():
+    wave = Waveform(t=axis(100), channels={1: np.zeros(100)},
+                    timebase=1e-3, time_offset=0.0)
+    assert measurements(wave, 2) == {}
+
+
+def test_every_reading_carries_a_label_and_a_unit():
+    wave = Waveform(t=axis(), channels={1: trapezoid(axis(), 1e-3, 1e-6)},
+                    timebase=1e-3, time_offset=0.0)
+    for key, (label, _value, unit) in measurements(wave, 1).items():
+        assert label == key
+        assert unit in ("V", "s", "Hz", "%")

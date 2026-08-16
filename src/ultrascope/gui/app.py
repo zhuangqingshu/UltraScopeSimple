@@ -18,8 +18,8 @@ from . import state as st
 from ..setup_file import load_setup, save_setup
 from ..units import eng
 from .panels import (AcquisitionPanel, ChannelPanel, ConnectionPanel,
-                     CursorPanel, ExportPanel, HorizontalPanel, SetupPanel,
-                     SpectrumPanel, TriggerPanel)
+                     CursorPanel, ExportPanel, HorizontalPanel,
+                     MeasurePanel, SetupPanel, SpectrumPanel, TriggerPanel)
 from .plot import SPECTRUM_DOMAIN, TIME_DOMAIN, PlotCanvas
 from .worker import Worker
 
@@ -81,11 +81,13 @@ class App(ttk.Frame):
         self.setup_panel = SetupPanel(panel, self._save_setup, self._load_setup)
         self.cursor_panel = CursorPanel(panel, self._apply_cursor_mode)
         self.spectrum_panel = SpectrumPanel(panel, self._apply_spectrum)
+        self.measure_panel = MeasurePanel(panel, self._apply_measure_source)
 
         self.panels = [self.connection, self.acquisition,
                        *self.channels.values(), self.horizontal,
                        self.trigger, self.export_panel, self.setup_panel,
-                       self.cursor_panel, self.spectrum_panel]
+                       self.cursor_panel, self.spectrum_panel,
+                       self.measure_panel]
         for row, item in enumerate(self.panels):
             item.grid(row)
 
@@ -105,7 +107,8 @@ class App(ttk.Frame):
         self.plot.enabled = lambda: self.connected
 
     # Panels that do not talk to the instrument stay live while disconnected.
-    ALWAYS_ENABLED = ("connection", "cursor_panel", "spectrum_panel")
+    ALWAYS_ENABLED = ("connection", "cursor_panel", "spectrum_panel",
+                      "measure_panel")
 
     def _set_enabled(self, on: bool) -> None:
         """Everything that needs a connection follows the connection state."""
@@ -363,6 +366,13 @@ class App(ttk.Frame):
     def _apply_cursor_mode(self) -> None:
         self.plot.set_cursor_mode(self.cursor_panel.mode.get())
 
+    def _apply_measure_source(self) -> None:
+        if self.measure_panel.is_local():
+            self.plot.show_local_measurements(
+                self.last_capture, self.measure_panel.channel_number())
+        else:
+            self.plot.measurements.set("")
+
     def _apply_spectrum(self) -> None:
         showing = self.spectrum_panel.showing()
         self.plot.set_domain(SPECTRUM_DOMAIN if showing else TIME_DOMAIN,
@@ -409,13 +419,19 @@ class App(ttk.Frame):
         self._draw(wave)
 
     def _draw(self, wave) -> None:
+        if self.measure_panel.is_local():
+            self.plot.show_local_measurements(
+                wave, self.measure_panel.channel_number())
         if self.spectrum_panel.showing():
             self.plot.show_spectrum(wave, self.spectrum_panel.channel_number())
         else:
             self.plot.show(wave)
 
     def _on_meas(self, stats) -> None:
-        self.plot.show_measurements(stats)
+        # The worker keeps polling the instrument; ignore it when the readout
+        # has been switched to the locally computed parameters.
+        if not self.measure_panel.is_local():
+            self.plot.show_measurements(stats)
 
     def _on_status(self, status) -> None:
         self.trigger.status.set(f"Status: {status}")

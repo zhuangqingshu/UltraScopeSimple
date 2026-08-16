@@ -24,7 +24,7 @@ src/ultrascope/
   scope.py       Scope —— SCPI 指令门面
   export.py      CSV / PNG 落盘
   setup_file.py  配置文件读写
-  analysis.py    本地分析：光标读数、插值取样、FFT 频谱
+  analysis.py    本地分析：光标读数、插值取样、FFT 频谱、参数测量
   units.py       eng() 显示格式化、scpi_number() 下发格式化
   cli.py         命令行工具
   gui/           Tkinter 界面（worker / state / panels / plot / app）
@@ -52,6 +52,8 @@ ultrascope-gui
   ΔT（附 1/ΔT，直接读频率）或 ΔV。**纯本地计算，不走 SCPI，断开连接也能测已有波形**
 - **Spectrum (FFT)**：勾选后波形区切换为频谱，可选窗函数（矩形/汉宁/海明/布莱克曼）与通道，
   纵轴 dBV，读数给出峰值频率与幅度、频率分辨率、等效采样率。同样是本地计算，断开也能用
+- **Measurements**：读数来源在「From scope」（仪器自动测量，更准，需连接）与「Local」
+  （本地按采样点算 15 项：电平、上升/下降时间、周期/频率、脉宽、占空比、过冲）之间切换
 - **Setup**：保存/加载完整配置（JSON），与 CLI 的 `--save-setup` / `--load-setup` 通用
 - **Export**：保存 CSV / PNG，Deep memory capture 读取深存储（见下方「已知限制」）
 

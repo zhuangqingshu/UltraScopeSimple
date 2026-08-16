@@ -303,6 +303,39 @@ class CursorPanel(Panel):
                   foreground="#777", font=("", 8))            .grid(row=1, column=0, columnspan=3, sticky="w", pady=(2, 0))
 
 
+class MeasurePanel(Panel):
+    """Chooses where the readout under the plot comes from.
+
+    The instrument's own measurements use its full acquisition and are the more
+    accurate of the two, but need a connection. The local ones are computed
+    from the captured samples, so they also work on a capture already on screen
+    while disconnected -- at the resolution of the 600-point screen record.
+    """
+
+    title = "Measurements"
+
+    INSTRUMENT = "instrument"
+    LOCAL = "local"
+
+    def __init__(self, parent, on_change):
+        super().__init__(parent)
+        self.source = tk.StringVar(value=self.INSTRUMENT)
+        for column, (value, label) in enumerate(
+                ((self.INSTRUMENT, "From scope"), (self.LOCAL, "Local"))):
+            ttk.Radiobutton(self.frame, text=label, value=value,
+                            variable=self.source, command=on_change)                .grid(row=0, column=column, sticky="w", padx=(0, 8))
+        self.channel = labelled_combo(self.frame, "Channel", ("1", "2"), 1,
+                                      on_change)
+        self.channel.set("1")
+
+    def is_local(self) -> bool:
+        return self.source.get() == self.LOCAL
+
+    def channel_number(self) -> Optional[int]:
+        text = self.channel.get()
+        return int(text) if text.isdigit() else None
+
+
 class SpectrumPanel(Panel):
     """FFT view. Like the cursors, this is computed locally and stays usable
     while disconnected."""

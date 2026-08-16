@@ -8,7 +8,7 @@ scope's own readouts, which are limited by a 320x234 screen.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -134,6 +134,163 @@ def spectrum(wave: Waveform, channel: int,
 
     return Spectrum(freqs=np.fft.rfftfreq(n, d=1.0 / rate),
                     magnitudes=magnitudes, window=window, sample_rate=rate)
+
+
+# Reference levels for edge timing, as fractions of top-to-base amplitude.
+LOW_REF, MID_REF, HIGH_REF = 0.1, 0.5, 0.9
+LEVEL_HISTOGRAM_BINS = 64
+
+
+@dataclass
+class Levels:
+    """The two logic levels of a trace, plus its extremes.
+
+    ``top`` and ``base`` are *not* max and min: a pulse that overshoots settles
+    at a top well below its peak, and timing a rise to 90% of the peak instead
+    of 90% of the settled level would read short. They come from where the
+    samples actually cluster.
+    """
+
+    top: float
+    base: float
+    maximum: float
+    minimum: float
+
+    @property
+    def amplitude(self) -> float:
+        return self.top - self.base
+
+    def reference(self, fraction: float) -> float:
+        return self.base + self.amplitude * fraction
+
+
+def levels(volts: np.ndarray,
+           bins: int = LEVEL_HISTOGRAM_BINS) -> Optional[Levels]:
+    """Find the settled high and low levels by histogram.
+
+    A trace spends most of its time at its two levels, so the fullest bin in
+    each half of the range is a better estimate than the extremes.
+    """
+    if len(volts) == 0:
+        return None
+    low, high = float(np.min(volts)), float(np.max(volts))
+    if low == high:
+        return Levels(top=high, base=low, maximum=high, minimum=low)
+
+    counts, edges = np.histogram(volts, bins=bins)
+    centres = (edges[:-1] + edges[1:]) / 2.0
+    midpoint = (low + high) / 2.0
+
+    def settled(half: np.ndarray, fallback: float) -> float:
+        if not half.any():
+            return fallback
+        index = int(np.nonzero(half)[0][int(np.argmax(counts[half]))])
+        # Average the samples inside the winning bin rather than taking its
+        # centre: a bin is wide enough that the centre alone leaves a clean
+        # trace reporting most of a percent of overshoot that is not there.
+        inside = volts[(volts >= edges[index]) & (volts <= edges[index + 1])]
+        return float(np.mean(inside)) if len(inside) else float(centres[index])
+
+    lower_half = centres <= midpoint
+    return Levels(top=settled(~lower_half, high), base=settled(lower_half, low),
+                  maximum=high, minimum=low)
+
+
+def crossings(t: np.ndarray, volts: np.ndarray, level: float,
+              rising: Optional[bool] = None) -> List[float]:
+    """Times at which the trace crosses a level, linearly interpolated.
+
+    Interpolating matters: snapping to the nearest sample would quantise every
+    timing measurement to the sample interval, which at 600 screen points is
+    coarse enough to swamp a rise time.
+    """
+    above = volts >= level
+    result: List[float] = []
+    for index in np.nonzero(np.diff(above.astype(np.int8)))[0]:
+        going_up = bool(above[index + 1])
+        if rising is not None and going_up != rising:
+            continue
+        v0, v1 = float(volts[index]), float(volts[index + 1])
+        if v1 == v0:
+            continue
+        span = (level - v0) / (v1 - v0)
+        result.append(float(t[index] + span * (t[index + 1] - t[index])))
+    return result
+
+
+def _first_edge_time(t, volts, lvl: Levels, rising: bool) -> Optional[float]:
+    """Duration of the first 10%-90% transition in the requested direction."""
+    low = crossings(t, volts, lvl.reference(LOW_REF if rising else HIGH_REF),
+                    rising=rising)
+    high = crossings(t, volts, lvl.reference(HIGH_REF if rising else LOW_REF),
+                     rising=rising)
+    for start in low:
+        later = [end for end in high if end > start]
+        if later:
+            return later[0] - start
+    return None
+
+
+def measurements(wave: Waveform, channel: int) -> Dict[str, Reading]:
+    """Standard trace parameters, computed locally.
+
+    Computed from the captured samples rather than asked of the instrument, so
+    they work on a saved capture and while disconnected. The trade-off is
+    resolution: the screen record is 600 points, so a rise time shorter than a
+    few sample intervals cannot be measured this way -- ask the scope instead.
+    """
+    volts = wave.channels.get(channel)
+    if volts is None or len(volts) < 2:
+        return {}
+
+    lvl = levels(volts)
+    t = wave.t
+    rows: Dict[str, Reading] = {
+        "Vtop": ("Vtop", lvl.top, "V"),
+        "Vbase": ("Vbase", lvl.base, "V"),
+        "Vamp": ("Vamp", lvl.amplitude, "V"),
+        "Vpp": ("Vpp", lvl.maximum - lvl.minimum, "V"),
+        "Vavg": ("Vavg", float(np.mean(volts)), "V"),
+        "Vrms": ("Vrms", float(np.sqrt(np.mean(np.square(volts)))), "V"),
+    }
+
+    rise = _first_edge_time(t, volts, lvl, rising=True)
+    fall = _first_edge_time(t, volts, lvl, rising=False)
+    rows["Rise"] = ("Rise", rise, "s")
+    rows["Fall"] = ("Fall", fall, "s")
+
+    mid = lvl.reference(MID_REF)
+    ups = crossings(t, volts, mid, rising=True)
+    downs = crossings(t, volts, mid, rising=False)
+
+    period = (ups[1] - ups[0]) if len(ups) >= 2 else None
+    rows["Period"] = ("Period", period, "s")
+    rows["Freq"] = ("Freq", (1.0 / period) if period else None, "Hz")
+
+    positive = _first_pulse(ups, downs)
+    negative = _first_pulse(downs, ups)
+    rows["+Width"] = ("+Width", positive, "s")
+    rows["-Width"] = ("-Width", negative, "s")
+    rows["Duty"] = ("Duty", (positive / period * 100.0)
+                    if (positive and period) else None, "%")
+
+    if lvl.amplitude > 0:
+        rows["Over"] = ("Over", (lvl.maximum - lvl.top) / lvl.amplitude * 100.0, "%")
+        rows["Pre"] = ("Pre", (lvl.base - lvl.minimum) / lvl.amplitude * 100.0, "%")
+    else:
+        rows["Over"] = ("Over", None, "%")
+        rows["Pre"] = ("Pre", None, "%")
+    return rows
+
+
+def _first_pulse(starts: Sequence[float],
+                 ends: Sequence[float]) -> Optional[float]:
+    """Width of the first interval that opens in ``starts`` and shuts in ``ends``."""
+    for start in starts:
+        later = [end for end in ends if end > start]
+        if later:
+            return later[0] - start
+    return None
 
 
 def cursor_readings(mode: str, a: Optional[float],
