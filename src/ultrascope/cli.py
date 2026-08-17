@@ -182,8 +182,13 @@ def report_analysis(wave, args) -> None:
                 print(f"CH{ch}  spectrum: not enough samples")
                 continue
             frequency, volts = spec.peak()
+            # Both references, because they differ by 3 dB and the instrument's
+            # own FFT reads in RMS while a peak amplitude is what most people
+            # picture when they see "1 V".
+            _f, rms = spec.peak_in(analysis.VRMS)
             peak = ("--" if frequency is None
-                    else f"{eng(frequency, 'Hz')} @ {eng(volts, 'V')}")
+                    else f"{eng(frequency, 'Hz')} @ {eng(volts, 'V')}pk "
+                         f"/ {eng(rms, 'Vrms')}")
             print(f"CH{ch}  peak={peak}  window={spec.window}"
                   f"  res={eng(spec.resolution, 'Hz')}"
                   f"  fs={eng(spec.sample_rate, 'Sa/s')}")

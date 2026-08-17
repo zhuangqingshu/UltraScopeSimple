@@ -129,6 +129,7 @@ class PlotCanvas:
         # None = choose a span from the signal; 0 or less = the full axis out
         # to Nyquist; anything else is a fixed upper frequency in Hz.
         self.spectrum_span = None
+        self.spectrum_scale = analysis.DEFAULT_SPECTRUM_SCALE
 
         # XY view: one channel against the other, time implicit. Drawn on the
         # same axes for the same reason as the spectrum -- switching back is
@@ -443,7 +444,8 @@ class PlotCanvas:
 
         if domain == SPECTRUM_DOMAIN:
             self.ax.set_xlabel("Frequency (Hz)")
-            self.ax.set_ylabel("Magnitude (dBV)")
+            self.ax.set_ylabel(
+                f"Magnitude ({analysis.SCALE_UNITS[self.spectrum_scale]})")
         elif domain == XY_DOMAIN:
             x_channel, y_channel = self.xy_channels
             self.ax.set_xlabel(f"CH{x_channel} (V)")
@@ -466,20 +468,37 @@ class PlotCanvas:
             self.canvas.draw_idle()
             return
 
-        db = spec.db
-        self.spectrum_line.set_data(spec.freqs, db)
+        values = spec.values(self.spectrum_scale)
+        self.spectrum_line.set_data(spec.freqs, values)
         self.spectrum_line.set_visible(True)
 
         span = self._spectrum_limit(spec)
         self.ax.set_xlim(0.0, span)
         # Scale to the part on screen: a bin beyond the right edge setting the
         # top would push the visible trace down out of the window.
-        shown = db[spec.freqs <= span]
-        top = float(np.max(shown)) if len(shown) else float(np.max(db))
-        self.ax.set_ylim(top - SPECTRUM_DB_RANGE, top + SPECTRUM_DB_HEADROOM)
+        shown = values[spec.freqs <= span]
+        top = float(np.max(shown)) if len(shown) else float(np.max(values))
+        self.ax.set_ylim(*self._spectrum_y_limits(top))
+        self.ax.set_ylabel(f"Magnitude ({analysis.SCALE_UNITS[self.spectrum_scale]})")
 
         self.spectrum_readout.set(self._spectrum_text(channel, spec, span))
         self.canvas.draw_idle()
+
+    def _spectrum_y_limits(self, top: float):
+        """A vertical window around the strongest visible bin.
+
+        A decibel axis wants a fixed range below the peak, since its floor is
+        arbitrarily far down. A linear one wants to start at zero -- that is
+        the point of a linear axis, and the small bins are meant to look small.
+        """
+        if analysis.is_logarithmic(self.spectrum_scale):
+            return top - SPECTRUM_DB_RANGE, top + SPECTRUM_DB_HEADROOM
+        return 0.0, (top * Y_MARGIN if top > 0 else FLAT_TRACE_HALF_SPAN)
+
+    def set_spectrum_scale(self, scale: str) -> None:
+        """Choose the vertical unit: Vrms / dBVrms as on the instrument, or
+        the peak-referenced pair."""
+        self.spectrum_scale = scale or analysis.DEFAULT_SPECTRUM_SCALE
 
     def set_spectrum_span(self, span: Optional[float]) -> None:
         """Limit the frequency axis. None means pick a span from the signal."""
@@ -495,9 +514,10 @@ class PlotCanvas:
         return min(self.spectrum_span, spec.nyquist)
 
     def _spectrum_text(self, channel: int, spec, span: float) -> str:
-        frequency, volts = spec.peak()
+        unit = analysis.SCALE_UNITS[self.spectrum_scale]
+        frequency, level = spec.peak_in(self.spectrum_scale)
         peak = ("--" if frequency is None
-                else f"{eng(frequency, 'Hz')} @ {eng(volts, 'V')}")
+                else f"{eng(frequency, 'Hz')} @ {eng(level, unit)}")
         text = (f"CH{channel}  peak={peak}   window={spec.window}"
                 f"   res={eng(spec.resolution, 'Hz')}"
                 f"   span={eng(span, 'Hz')} of {eng(spec.nyquist, 'Hz')}"

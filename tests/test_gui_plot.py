@@ -631,3 +631,67 @@ def test_the_readout_says_how_much_of_the_axis_is_shown(canvas):
     canvas.set_domain(SPECTRUM_DOMAIN)
     canvas.show_spectrum(tone(), 1)
     assert "span=" in canvas.spectrum_readout.get()
+
+
+# --- the vertical scale of the spectrum -------------------------------------
+
+def test_the_spectrum_defaults_to_the_scale_the_instrument_uses(canvas):
+    assert canvas.spectrum_scale == an.DBVRMS
+
+
+def test_the_axis_is_labelled_with_the_chosen_unit(canvas):
+    canvas.set_spectrum_scale(an.VRMS)
+    canvas.set_domain(SPECTRUM_DOMAIN)
+    canvas.show_spectrum(tone(), 1)
+    assert canvas.ax.get_ylabel() == "Magnitude (Vrms)"
+
+
+def test_switching_scale_changes_the_plotted_values(canvas):
+    wave = tone()
+    canvas.set_domain(SPECTRUM_DOMAIN)
+    canvas.set_spectrum_scale(an.VPEAK)
+    canvas.show_spectrum(wave, 1)
+    peak_volts = float(np.max(canvas.spectrum_line.get_ydata()))
+
+    canvas.set_spectrum_scale(an.VRMS)
+    canvas.show_spectrum(wave, 1)
+    rms_volts = float(np.max(canvas.spectrum_line.get_ydata()))
+    assert rms_volts == pytest.approx(peak_volts / np.sqrt(2), rel=1e-6)
+
+
+def test_a_linear_axis_starts_at_zero(canvas):
+    # The point of a linear scale is that small bins look small; starting it
+    # just under the peak the way a dB axis does would defeat that.
+    canvas.set_spectrum_scale(an.VRMS)
+    canvas.set_domain(SPECTRUM_DOMAIN)
+    canvas.show_spectrum(tone(), 1)
+    assert canvas.ax.get_ylim()[0] == 0.0
+
+
+def test_a_decibel_axis_keeps_a_fixed_range_below_the_peak(canvas):
+    from ultrascope.gui.plot import SPECTRUM_DB_HEADROOM, SPECTRUM_DB_RANGE
+
+    canvas.set_spectrum_scale(an.DBVRMS)
+    canvas.set_domain(SPECTRUM_DOMAIN)
+    canvas.show_spectrum(tone(), 1)
+    low, high = canvas.ax.get_ylim()
+    assert high - low == pytest.approx(SPECTRUM_DB_RANGE + SPECTRUM_DB_HEADROOM)
+    assert low < 0        # a 1 V tone sits near 0 dB, so the floor is below it
+
+
+def test_the_readout_quotes_the_peak_in_the_chosen_unit(canvas):
+    canvas.set_spectrum_scale(an.VRMS)
+    canvas.set_domain(SPECTRUM_DOMAIN)
+    canvas.show_spectrum(tone(), 1)
+    assert "Vrms" in canvas.spectrum_readout.get()
+
+
+def test_a_flat_trace_on_a_linear_axis_still_gets_a_window(canvas):
+    t = time_axis(600, 1e-3, 0.0, DS1000E)
+    silent = Waveform(t=t, channels={1: np.zeros(600)}, timebase=1e-3,
+                      time_offset=0.0)
+    canvas.set_spectrum_scale(an.VPEAK)
+    canvas.set_domain(SPECTRUM_DOMAIN)
+    canvas.show_spectrum(silent, 1)
+    low, high = canvas.ax.get_ylim()
+    assert high > low

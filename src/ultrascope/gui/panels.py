@@ -528,6 +528,11 @@ class ViewPanel(Panel):
         self.span = labelled_combo(self.spectrum_frame, "Span",
                                    st.SPECTRUM_SPAN_LABELS, 2, on_change)
         self.span.set(st.DEFAULT_SPECTRUM_SPAN)
+        # Vrms and dBVrms are what the instrument's own FFT menu offers; the
+        # peak-referenced pair is what this tool computed before them.
+        self.scale = labelled_combo(self.spectrum_frame, "Scale",
+                                    analysis.SPECTRUM_SCALES, 3, on_change)
+        self.scale.set(analysis.DEFAULT_SPECTRUM_SCALE)
 
         self.xy_frame = ttk.Frame(box)
         self.xy_frame.grid(row=2, column=0, columnspan=3, sticky="ew")
@@ -561,6 +566,9 @@ class ViewPanel(Panel):
 
     def spectrum_span(self):
         return st.spectrum_span_for(self.span.get())
+
+    def spectrum_scale(self) -> str:
+        return self.scale.get() or analysis.DEFAULT_SPECTRUM_SCALE
 
     def xy_channels(self):
         return (int(self.x_channel.get() or 1), int(self.y_channel.get() or 2))

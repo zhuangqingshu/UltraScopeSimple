@@ -472,6 +472,7 @@ class App(ttk.Frame):
     def _apply_view(self) -> None:
         domain = self.DOMAIN_FOR_VIEW.get(self.view_panel.showing(), TIME_DOMAIN)
         self.plot.set_spectrum_span(self.view_panel.spectrum_span())
+        self.plot.set_spectrum_scale(self.view_panel.spectrum_scale())
         self.plot.set_domain(domain, window=self.view_panel.window.get())
         # Redraw straight away from the capture already on screen, so the view
         # does not stay blank until the next live frame.

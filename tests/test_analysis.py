@@ -3,7 +3,8 @@
 import numpy as np
 import pytest
 
-from ultrascope.analysis import (DEFAULT_WINDOW, OFF, TIME, VOLTAGE, WINDOWS,
+from ultrascope.analysis import (DBVPEAK, DBVRMS, DEFAULT_WINDOW, OFF, TIME,
+                                 VOLTAGE, VPEAK, VRMS, WINDOWS,
                                  cursor_readings, default_cursor_positions,
                                  crossings, levels, measurements,
                                  nearest_cursor, sample_at, sample_rate,
@@ -191,13 +192,15 @@ def test_silence_reads_as_the_floor_rather_than_minus_infinity():
     silent = Waveform(t=t, channels={1: np.zeros(600)},
                       timebase=1e-3, time_offset=0.0)
     spec = spectrum(silent, 1)
-    assert np.all(np.isfinite(spec.db))
+    assert np.all(np.isfinite(spec.values(DBVRMS)))
+    assert np.all(np.isfinite(spec.values(DBVPEAK)))
 
 
-def test_db_matches_the_magnitudes():
+def test_the_peak_referenced_decibels_match_the_magnitudes():
     spec = spectrum(sine_wave(amplitude=1.0), 1)
     _frequency, volts = spec.peak()
-    assert spec.db.max() == pytest.approx(20 * np.log10(volts), abs=0.01)
+    assert spec.values(DBVPEAK).max() == pytest.approx(20 * np.log10(volts),
+                                                       abs=0.01)
 
 
 def test_an_absent_channel_has_no_spectrum():
@@ -578,3 +581,94 @@ def test_enough_cycles_puts_the_peak_on_the_right_frequency():
     frequency, volts = spectrum(sine(1000.0, timebase=2e-3), 1).peak()
     assert frequency == pytest.approx(1000.0, rel=0.05)
     assert volts == pytest.approx(1.0, rel=0.05)
+
+
+# --- vertical scales --------------------------------------------------------
+
+from ultrascope.analysis import SPECTRUM_SCALES, is_logarithmic  # noqa: E402
+
+
+def test_a_sine_reads_its_peak_on_the_peak_scale():
+    spec = spectrum(sine_wave(amplitude=1.0), 1)
+    assert spec.peak_in(VPEAK)[1] == pytest.approx(1.0, abs=0.02)
+
+
+def test_the_same_sine_reads_its_rms_on_the_rms_scale():
+    # This is what the instrument's own FFT shows, and it is a factor of
+    # root two below the peak -- not the same number under another name.
+    spec = spectrum(sine_wave(amplitude=1.0), 1)
+    assert spec.peak_in(VRMS)[1] == pytest.approx(1.0 / np.sqrt(2), abs=0.02)
+
+
+def test_the_two_decibel_scales_differ_by_exactly_three_db():
+    # 20*log10(sqrt(2)) = 3.0103. Labelling a peak-referenced axis "dBV" --
+    # which conventionally means dB relative to one volt RMS -- read this much
+    # high against both the convention and the instrument.
+    spec = spectrum(sine_wave(amplitude=2.0), 1)
+    assert (spec.peak_in(DBVPEAK)[1] - spec.peak_in(DBVRMS)[1]) \
+        == pytest.approx(20 * np.log10(np.sqrt(2)), abs=1e-9)
+
+
+def test_decibels_follow_from_the_linear_scale_they_reference():
+    spec = spectrum(sine_wave(amplitude=1.5), 1)
+    assert spec.values(DBVRMS) == pytest.approx(
+        20 * np.log10(np.maximum(spec.values(VRMS), 1e-12)))
+
+
+def test_the_bins_account_for_the_whole_signal():
+    # Parseval: the RMS of the trace equals the root sum of squares of the bin
+    # RMS values. This is what pins down the two exceptions below -- get them
+    # wrong and the total comes out 25% low.
+    wave = sine_wave(amplitude=1.0, offset=2.0)
+    volts = wave.channels[1]
+    spec = spectrum(wave, 1, "rectangular")
+    assert float(np.sqrt(np.sum(spec.rms ** 2))) == pytest.approx(
+        float(np.sqrt(np.mean(volts ** 2))), rel=1e-9)
+
+
+def test_dc_is_not_divided_by_root_two():
+    # DC is not a sinusoid: its RMS is its own value.
+    spec = spectrum(sine_wave(amplitude=1.0, offset=3.0), 1, "rectangular")
+    assert spec.rms[0] == pytest.approx(spec.magnitudes[0])
+    assert spec.rms[0] == pytest.approx(3.0, abs=0.02)
+
+
+def test_the_nyquist_bin_of_an_even_record_is_not_either():
+    # It alternates between two values rather than tracing a sinusoid.
+    spec = spectrum(sine_wave(npoints=600), 1, "rectangular")
+    assert spec.even_length
+    assert spec.rms[-1] == pytest.approx(spec.magnitudes[-1])
+
+
+def test_an_odd_length_record_has_no_nyquist_bin_to_except():
+    spec = spectrum(sine_wave(npoints=601), 1, "rectangular")
+    assert not spec.even_length
+    assert spec.rms[-1] == pytest.approx(spec.magnitudes[-1] / np.sqrt(2))
+
+
+def test_ordinary_bins_are_divided_by_root_two():
+    spec = spectrum(sine_wave(amplitude=1.0), 1)
+    peak_bin = int(np.argmax(spec.magnitudes[3:])) + 3
+    assert spec.rms[peak_bin] == pytest.approx(
+        spec.magnitudes[peak_bin] / np.sqrt(2))
+
+
+@pytest.mark.parametrize("scale", SPECTRUM_SCALES)
+def test_every_scale_produces_one_value_per_bin(scale):
+    spec = spectrum(sine_wave(), 1)
+    assert len(spec.values(scale)) == len(spec.freqs)
+    assert np.all(np.isfinite(spec.values(scale)))
+
+
+def test_an_unknown_scale_is_rejected():
+    with pytest.raises(ValueError, match="unknown scale"):
+        spectrum(sine_wave(), 1).values("dBm")
+
+
+def test_only_the_decibel_scales_are_logarithmic():
+    assert [s for s in SPECTRUM_SCALES if is_logarithmic(s)] == [DBVRMS, DBVPEAK]
+
+
+def test_the_peak_sits_at_the_same_frequency_on_every_scale():
+    spec = spectrum(sine_wave(frequency=2000.0), 1)
+    assert len({spec.peak_in(s)[0] for s in SPECTRUM_SCALES}) == 1

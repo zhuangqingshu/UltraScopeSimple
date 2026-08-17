@@ -41,6 +41,24 @@ WINDOW_MAIN_LOBE_BINS = {
 # Magnitudes below this read as the floor rather than -inf dB.
 DB_FLOOR = 1e-12
 
+# Vertical scales for the spectrum. The first two are what the instrument's own
+# FFT menu offers (User's Guide p.44, "Scale: Vrms / dBVrms"); the peak-
+# referenced pair is what this tool computed before they were added.
+#
+# The distinction is not cosmetic. dBV conventionally means dB relative to one
+# volt RMS, so labelling a peak-referenced axis "dBV" -- as this did -- reads
+# 3.01 dB high against both the convention and the instrument.
+VRMS, DBVRMS, VPEAK, DBVPEAK = "Vrms", "dBVrms", "Vpk", "dBVpk"
+SPECTRUM_SCALES = (DBVRMS, VRMS, DBVPEAK, VPEAK)
+DEFAULT_SPECTRUM_SCALE = DBVRMS
+LOGARITHMIC_SCALES = (DBVRMS, DBVPEAK)
+
+SCALE_UNITS = {VRMS: "Vrms", DBVRMS: "dBVrms", VPEAK: "V", DBVPEAK: "dBVpk"}
+
+
+def is_logarithmic(scale: str) -> bool:
+    return scale in LOGARITHMIC_SCALES
+
 # How many harmonics of the strongest component to keep in view by default.
 # The axis runs to Nyquist, which is set by the timebase and has nothing to do
 # with where the signal is: a 1 kHz square wave at 200 us/div lands in the first
@@ -91,11 +109,44 @@ class Spectrum:
     magnitudes: np.ndarray
     window: str
     sample_rate: float
+    # Whether the record had an even number of samples, which decides whether
+    # the last bin is a genuine Nyquist term. Carried rather than inferred:
+    # the bin count alone cannot tell.
+    even_length: bool = True
 
     @property
-    def db(self) -> np.ndarray:
-        """Magnitudes as dBV, floored so silence is not -inf."""
-        return 20.0 * np.log10(np.maximum(self.magnitudes, DB_FLOOR))
+    def rms(self) -> np.ndarray:
+        """Per-bin RMS voltage.
+
+        A sinusoid of peak amplitude a has RMS a/sqrt(2) -- but DC is not a
+        sinusoid, and neither is the Nyquist bin of an even-length record:
+        both alternate between two values whose RMS is the amplitude itself.
+        Dividing those two by sqrt(2) as well breaks Parseval's theorem, which
+        is exactly the check ``test_the_bins_account_for_the_whole_signal``
+        makes.
+        """
+        values = self.magnitudes / np.sqrt(2.0)
+        values[0] = self.magnitudes[0]
+        if self.even_length:
+            values[-1] = self.magnitudes[-1]
+        return values
+
+    def values(self, scale: str = DEFAULT_SPECTRUM_SCALE) -> np.ndarray:
+        """The spectrum on one of the vertical scales.
+
+        Logarithmic scales are floored rather than allowed to reach -inf, so a
+        silent trace plots as a flat line at the floor instead of vanishing.
+        """
+        if scale == VPEAK:
+            return self.magnitudes
+        if scale == VRMS:
+            return self.rms
+        if scale == DBVPEAK:
+            return 20.0 * np.log10(np.maximum(self.magnitudes, DB_FLOOR))
+        if scale == DBVRMS:
+            return 20.0 * np.log10(np.maximum(self.rms, DB_FLOOR))
+        raise ValueError(f"unknown scale {scale!r}; "
+                         f"expected one of {list(SPECTRUM_SCALES)}")
 
     @property
     def resolution(self) -> float:
@@ -114,6 +165,14 @@ class Spectrum:
             return None, None
         index = int(np.argmax(self.magnitudes[start:])) + start
         return float(self.freqs[index]), float(self.magnitudes[index])
+
+    def peak_in(self, scale: str = DEFAULT_SPECTRUM_SCALE):
+        """The strongest bin clear of DC, read on one of the vertical scales."""
+        frequency, _volts = self.peak()
+        if frequency is None:
+            return None, None
+        index = int(np.argmin(np.abs(self.freqs - frequency)))
+        return frequency, float(self.values(scale)[index])
 
     @property
     def nyquist(self) -> float:
@@ -179,7 +238,8 @@ def spectrum(wave: Waveform, channel: int,
         magnitudes[-1] /= 2.0
 
     return Spectrum(freqs=np.fft.rfftfreq(n, d=1.0 / rate),
-                    magnitudes=magnitudes, window=window, sample_rate=rate)
+                    magnitudes=magnitudes, window=window, sample_rate=rate,
+                    even_length=(n % 2 == 0))
 
 
 # Reference levels for edge timing, as fractions of top-to-base amplitude.
