@@ -44,6 +44,16 @@ docs/            架构文档与官方 User's Guide
 ultrascope-gui
 ```
 
+左侧控制区分为四个标签页，按"要问什么问题"分组；状态栏在标签页之外常驻，
+命令失败的提示不会被藏在刚切走的那一页上。某一页装不下时才出现滚动条。
+
+| 标签页 | 面板 |
+|--------|------|
+| **Capture** | Connection、Acquisition、Horizontal、Capture file、Setup |
+| **Channels** | Channel 1、Channel 2 |
+| **Trigger** | Trigger |
+| **Analysis** | Cursors、View、Math、Measurements、Reference、Persistence |
+
 - **Connection**：刷新并选择 VISA 资源后 Connect（若无法识别，先用官方 UltraSigma 确认示波器可被电脑看到）
 - **Acquisition**：Run / Stop / Auto / Single / Force，Live 实时刷新，平均与深存储模式
 - **Channel 1/2**：显示开关、Active 单选、探头衰减比、V/div、耦合、垂直位移

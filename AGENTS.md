@@ -18,7 +18,7 @@ Layering is strictly one-directional: `cli.py`/`gui/` → `scope.py` → `wavefo
 - `waveform.py` — pure `parse_block` / `decode` / `time_axis` + the `Waveform` value object. `parse_block` rejects short transfers rather than truncating.
 - `analysis.py` — local measurement over a `Waveform` (cursors, sampling, FFT, trace parameters, channel maths, XY). No SCPI, so it works while disconnected. Channel maths is local by choice, not via `:MATH:OPER`.
 - `scope.py` — `Scope` SCPI facade; `Scope.connect()` convenience constructor; `snapshot()` → `ScopeSettings`.
-- `gui/` — `worker.py` / `state.py` / `panels.py` / `plot.py` / `app.py`. Works with no instrument: Open CSV sets `last_capture` and every analysis panel reads only that. Panels that must stay live while disconnected are listed in `App.ALWAYS_ENABLED`.
+- `gui/` — `worker.py` / `state.py` / `panels.py` / `plot.py` / `app.py`. Works with no instrument: Open CSV sets `last_capture` and every analysis panel reads only that. Panels that must stay live while disconnected are listed in `App.ALWAYS_ENABLED`. The sidebar is a notebook driven by `App.TABS`; a panel missing from it is built but never gridded (a test catches that). Each tab scrolls when it outgrows the window.
 
 ### Invariants
 

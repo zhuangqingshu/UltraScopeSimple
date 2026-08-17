@@ -20,7 +20,7 @@ from ..units import eng
 from .panels import (AcquisitionPanel, ChannelPanel, ConnectionPanel,
                      CursorPanel, FilePanel, HorizontalPanel, MathPanel,
                      MeasurePanel, PersistencePanel, ReferencePanel,
-                     SetupPanel, TriggerPanel, ViewPanel)
+                     ScrollableColumn, SetupPanel, TriggerPanel, ViewPanel)
 from .plot import SPECTRUM_DOMAIN, TIME_DOMAIN, XY_DOMAIN, PlotCanvas
 from .worker import Worker
 
@@ -59,49 +59,85 @@ class App(ttk.Frame):
 
     # ------------------------------------------------------------------ UI
 
-    def _build(self) -> None:
-        panel = ttk.Frame(self)
-        panel.grid(row=0, column=0, sticky="ns", padx=(0, 8))
+    # The sidebar's tabs, in order, each as (label, panel attribute names).
+    # Fourteen panels in one column ran off the bottom of the window; grouping
+    # them by the question being asked keeps every tab short enough to read at
+    # a glance without hunting.
+    TABS = (
+        ("Capture", ("connection", "acquisition", "horizontal", "file_panel",
+                     "setup_panel")),
+        ("Channels", ("channel1", "channel2")),
+        ("Trigger", ("trigger",)),
+        ("Analysis", ("cursor_panel", "view_panel", "math_panel",
+                      "measure_panel", "reference_panel", "persistence_panel")),
+    )
 
-        self.connection = ConnectionPanel(panel, self._refresh_resources,
+    def _build(self) -> None:
+        sidebar = ttk.Frame(self)
+        sidebar.grid(row=0, column=0, sticky="ns", padx=(0, 8))
+        sidebar.rowconfigure(0, weight=1)
+
+        self.tabs = ttk.Notebook(sidebar)
+        self.tabs.grid(row=0, column=0, sticky="nsew")
+        # One scrollable column per tab, built before the panels because each
+        # panel needs its column's inner frame as its parent.
+        self.columns = {}
+        for label, _names in self.TABS:
+            column = ScrollableColumn(self.tabs)
+            self.columns[label] = column
+            self.tabs.add(column.outer, text=label)
+
+        def home(label):
+            return self.columns[label].inner
+
+        self.connection = ConnectionPanel(home("Capture"),
+                                          self._refresh_resources,
                                           self._toggle_connect)
         self.acquisition = AcquisitionPanel(
-            panel, on_run=self._run, on_stop=self._stop, on_auto=self._autoset,
-            on_single=self._single, on_force=self._force,
+            home("Capture"), on_run=self._run, on_stop=self._stop,
+            on_auto=self._autoset, on_single=self._single, on_force=self._force,
             on_live=self._toggle_live, on_apply=self._apply_acquire)
-        self.channels = {ch: ChannelPanel(panel, ch, self.volt_table,
+        self.horizontal = HorizontalPanel(home("Capture"), self.time_table,
+                                          self._apply_timebase)
+        self.file_panel = FilePanel(home("Capture"), self._open_capture,
+                                    self._save_csv, self._save_png,
+                                    self._deep_capture)
+        self.setup_panel = SetupPanel(home("Capture"), self._save_setup,
+                                      self._load_setup)
+
+        self.channels = {ch: ChannelPanel(home("Channels"), ch, self.volt_table,
                                           self.active_channel,
                                           self._apply_channel)
                          for ch in CHANNELS}
-        self.horizontal = HorizontalPanel(panel, self.time_table,
-                                          self._apply_timebase)
-        self.trigger = TriggerPanel(panel, self._apply_trigger_mode,
+        self.channel1, self.channel2 = self.channels[1], self.channels[2]
+
+        self.trigger = TriggerPanel(home("Trigger"), self._apply_trigger_mode,
                                     self._apply_trigger, self._level_50)
-        self.file_panel = FilePanel(panel, self._open_capture, self._save_csv,
-                                    self._save_png, self._deep_capture)
-        self.setup_panel = SetupPanel(panel, self._save_setup, self._load_setup)
-        self.cursor_panel = CursorPanel(panel, self._apply_cursor_mode)
-        self.view_panel = ViewPanel(panel, self._apply_view)
-        self.math_panel = MathPanel(panel, self._apply_math)
-        self.measure_panel = MeasurePanel(panel, self._apply_measure_source)
+
+        self.cursor_panel = CursorPanel(home("Analysis"), self._apply_cursor_mode)
+        self.view_panel = ViewPanel(home("Analysis"), self._apply_view)
+        self.math_panel = MathPanel(home("Analysis"), self._apply_math)
+        self.measure_panel = MeasurePanel(home("Analysis"),
+                                          self._apply_measure_source)
         self.reference_panel = ReferencePanel(
-            panel, self._store_reference, self._load_reference,
+            home("Analysis"), self._store_reference, self._load_reference,
             self._clear_reference)
         self.persistence_panel = PersistencePanel(
-            panel, self._apply_persistence, self._clear_persistence)
+            home("Analysis"), self._apply_persistence, self._clear_persistence)
 
-        self.panels = [self.connection, self.acquisition,
-                       *self.channels.values(), self.horizontal,
-                       self.trigger, self.file_panel, self.setup_panel,
-                       self.cursor_panel, self.view_panel, self.math_panel,
-                       self.measure_panel, self.reference_panel,
-                       self.persistence_panel]
-        for row, item in enumerate(self.panels):
-            item.grid(row)
+        self.panels = []
+        for label, names in self.TABS:
+            for row, name in enumerate(names):
+                item = getattr(self, name)
+                item.grid(row)
+                self.panels.append(item)
 
+        # Outside the notebook: a message about a failed command must not be
+        # hidden on the tab you have just switched away from.
         self.status = tk.StringVar(value="Ready.")
-        ttk.Label(panel, textvariable=self.status, wraplength=260,
-                  foreground="#333").grid(row=len(self.panels), column=0, sticky="w")
+        ttk.Label(sidebar, textvariable=self.status, wraplength=260,
+                  foreground="#333").grid(row=1, column=0, sticky="w",
+                                          pady=(6, 0))
 
         self.plot = PlotCanvas(self)
         self.plot.grid(row=0, column=1, sticky="nsew")

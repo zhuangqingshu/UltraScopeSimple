@@ -174,6 +174,14 @@ DURATION 未做。第三阶段**全部完成**（光标测量、FFT 频谱、本
 `App.ALWAYS_ENABLED` 列出不随连接状态禁用的面板——**新增分析面板时记得加进去**。
 `FilePanel` 是例外：它不在那个列表里，而是自己 gate 深存储那一个按钮，因为只有它需要仪器。
 
+**侧栏是 `ttk.Notebook`，由 `App.TABS` 驱动**（Capture / Channels / Trigger / Analysis）。
+十四个面板堆一列会超出窗口，下面的静默看不见。`TABS` 同时也是 `self.panels` 的来源，
+所以**新增面板必须填进去**，否则面板会被构造却从未 grid——效果和没写一样。
+`tests/test_gui_layout.py` 扫描 App 上所有 `Panel` 实例与 `self.panels` 比对，专门盯这个。
+每页是 `ScrollableColumn`，装不下时才出滚动条；滚轮要 `bind_all` 才能在子控件上收到，
+所以每个 column 都会收到每一次滚动并自行判断指针位置——**波形图上的滚轮是微调触发电平**，
+不能抢。
+
 **通道运算刻意没走 `:MATH:OPER`**。双通道数据本来就在手里，numpy 更灵活，更重要的是
 不引入又一批需要 Programming Guide 核对的命令拼写——这是第二阶段留下的教训。
 乘积单位是 V² 不是 V，纵轴却是伏特，所以图例里标出单位；`measurements_of()` 为此

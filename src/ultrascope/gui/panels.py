@@ -48,6 +48,92 @@ def parse_float(text) -> Optional[float]:
         return None
 
 
+class ScrollableColumn:
+    """A column of panels that scrolls when it is taller than the window.
+
+    The panels are grouped into notebook tabs so that none of them normally
+    needs scrolling, but a tab is only as short as whatever is on it: shrink the
+    window, or add a panel, and the bottom one would silently fall off the
+    screen. That is the failure this guards -- the scrollbar appears only when
+    the content genuinely does not fit.
+
+    Tk has no scrollable frame, so this is the usual Canvas-with-a-window
+    construction: the frame lives inside a Canvas, and the Canvas scrolls it.
+    """
+
+    # How far one notch of the wheel scrolls.
+    WHEEL_UNITS = 3
+
+    def __init__(self, parent):
+        self.outer = ttk.Frame(parent)
+        self.outer.rowconfigure(0, weight=1)
+        self.outer.columnconfigure(0, weight=1)
+
+        background = ttk.Style().lookup("TFrame", "background") or None
+        self.canvas = tk.Canvas(self.outer, highlightthickness=0, borderwidth=0,
+                                background=background)
+        self.canvas.grid(row=0, column=0, sticky="nsew")
+        self.scrollbar = ttk.Scrollbar(self.outer, orient="vertical",
+                                       command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=self._on_scrolled)
+
+        self.inner = ttk.Frame(self.canvas)
+        self.inner.columnconfigure(0, weight=1)
+        self.window = self.canvas.create_window((0, 0), window=self.inner,
+                                                anchor="nw")
+
+        self.inner.bind("<Configure>", self._on_content_resized)
+        self.canvas.bind("<Configure>", self._on_view_resized)
+        # bind_all is the only way to see the wheel over a child widget, so
+        # every column hears every notch and each checks whether the pointer is
+        # actually over its own canvas.
+        for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            self.canvas.bind_all(sequence, self._on_wheel, add="+")
+
+    def grid(self, **kwargs) -> None:
+        self.outer.grid(**kwargs)
+
+    def _on_content_resized(self, _event=None) -> None:
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        # Let the column ask for exactly the width its widest panel needs; the
+        # sidebar is packed against the plot, which takes the rest.
+        self.canvas.configure(width=self.inner.winfo_reqwidth())
+
+    def _on_view_resized(self, event) -> None:
+        # Panels stretch to the full width rather than keeping their natural
+        # one, so a combobox lines up with the group box around it.
+        self.canvas.itemconfigure(self.window, width=event.width)
+
+    def _on_scrolled(self, first: str, last: str) -> None:
+        """Show the scrollbar only while there is something to scroll to."""
+        if float(first) <= 0.0 and float(last) >= 1.0:
+            self.scrollbar.grid_remove()
+        else:
+            self.scrollbar.grid(row=0, column=1, sticky="ns")
+        self.scrollbar.set(first, last)
+
+    def _contains_pointer(self) -> bool:
+        try:
+            under = self.canvas.winfo_containing(*self.canvas.winfo_pointerxy())
+        except tk.TclError:
+            return False
+        while under is not None:
+            if under is self.canvas:
+                return True
+            under = getattr(under, "master", None)
+        return False
+
+    def _on_wheel(self, event) -> None:
+        if not self._contains_pointer():
+            return
+        # Windows and macOS report a signed delta; X11 sends button 4/5.
+        if getattr(event, "num", None) in (4, 5):
+            direction = -1 if event.num == 4 else 1
+        else:
+            direction = -1 if event.delta > 0 else 1
+        self.canvas.yview_scroll(direction * self.WHEEL_UNITS, "units")
+
+
 class Panel:
     """A titled group box that can be enabled or disabled as a unit."""
 

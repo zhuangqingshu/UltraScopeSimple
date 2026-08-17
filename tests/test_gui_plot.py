@@ -5,7 +5,6 @@ handlers are exercised through plain namespaces standing in for matplotlib
 events.
 """
 
-import os
 import tkinter as tk
 from types import SimpleNamespace
 
@@ -17,21 +16,9 @@ from ultrascope.gui.plot import SPECTRUM_DOMAIN, TIME_DOMAIN
 from ultrascope.profile import DS1000E
 from ultrascope.waveform import Waveform, time_axis
 
-@pytest.fixture(scope="module")
-def root():
-    """One hidden Tk root for the module; re-creating one per test is flaky."""
-    try:
-        window = tk.Tk()
-    except tk.TclError as exc:  # pragma: no cover - headless CI
-        # On a developer machine a missing display is a reason to skip. In CI
-        # it means the coverage silently vanished, so ULTRASCOPE_REQUIRE_TK
-        # turns the skip into a failure.
-        if os.environ.get("ULTRASCOPE_REQUIRE_TK"):
-            pytest.fail(f"ULTRASCOPE_REQUIRE_TK set but Tk is unusable: {exc}")
-        pytest.skip(f"no display for Tk: {exc}")
-    window.withdraw()
-    yield window
-    window.destroy()
+# ``root`` comes from conftest: only one Tk root may exist per process, and
+# re-creating one per module fails with a TclError that looks like a broken
+# Tk installation.
 
 
 @pytest.fixture

@@ -31,6 +31,7 @@ cli.py / gui/   →  scope.py  →  waveform.py + profile.py  →  transport.py
 - `scope.py` — `Scope` SCPI facade, built on a `Transport` + `DeviceProfile`. `Scope.connect()` is the convenience constructor. `snapshot()` returns a `ScopeSettings` the GUI mirrors onto its panels.
 - `gui/` — `worker.py` (the one thread allowed to touch the instrument), `state.py` (combobox option tables), `panels.py`, `plot.py` (one axes serving three views — time / spectrum / XY — plus cursors, math overlay, reference, persistence), `app.py` (assembly + `(tag, kind, payload)` dispatch to `_on_<tag>`).
 - **The GUI works with no instrument.** `FilePanel`'s Open CSV sets `last_capture`, and everything downstream (cursors, spectrum, XY, math, local measurements) reads only that. `App.ALWAYS_ENABLED` lists the panels that must not follow the connection state; add analysis panels there. `FilePanel` is the exception that gates one button itself, because only the deep-memory read needs the scope.
+- **`App.TABS` drives the sidebar.** It maps each notebook tab to the panel attributes on it, and is also what populates `self.panels` — a new panel left out of it is built but never gridded, which looks identical to a panel that does not exist. `tests/test_gui_layout.py` fails on that. Each tab is a `ScrollableColumn`, so a tab that outgrows the window scrolls rather than clipping.
 
 ### Invariants that must not be broken
 
