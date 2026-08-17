@@ -41,6 +41,19 @@ WINDOW_MAIN_LOBE_BINS = {
 # Magnitudes below this read as the floor rather than -inf dB.
 DB_FLOOR = 1e-12
 
+# How many harmonics of the strongest component to keep in view by default.
+# The axis runs to Nyquist, which is set by the timebase and has nothing to do
+# with where the signal is: a 1 kHz square wave at 200 us/div lands in the first
+# 4% of a 125 kHz axis and reads as a smudge against the left edge.
+DISPLAY_HARMONICS = 10
+# Never zoom in so far that only a handful of bins are visible.
+MIN_DISPLAY_BINS = 20
+
+# Below this many cycles in the record, the peak straddles bins: its frequency
+# reads wrong and its amplitude reads low. The cure is a slower timebase, so
+# the readout says so rather than leaving it to be discovered.
+CYCLES_FOR_A_SHARP_PEAK = 10.0
+
 
 def _window(name: str, n: int) -> np.ndarray:
     if name == "rectangular":
@@ -101,6 +114,39 @@ class Spectrum:
             return None, None
         index = int(np.argmax(self.magnitudes[start:])) + start
         return float(self.freqs[index]), float(self.magnitudes[index])
+
+    @property
+    def nyquist(self) -> float:
+        return float(self.freqs[-1]) if len(self.freqs) else 0.0
+
+    def cycles(self) -> Optional[float]:
+        """How many cycles of the peak component the record holds.
+
+        Equal to peak frequency over bin spacing, since both are one over a
+        time. This is the number that decides whether the FFT can resolve the
+        signal at all: at two cycles the fundamental falls between bins and is
+        split across them, so it reads at the wrong frequency and too small.
+        """
+        frequency, _volts = self.peak()
+        if not frequency or self.resolution <= 0:
+            return None
+        return frequency / self.resolution
+
+    def display_span(self, harmonics: int = DISPLAY_HARMONICS) -> float:
+        """A frequency range worth looking at, rather than the whole axis.
+
+        Nyquist follows from the timebase and says nothing about where the
+        signal is. Showing the peak and some harmonics puts the interesting
+        part across the plot instead of in its leftmost few pixels; the caller
+        can still ask for the full range.
+        """
+        frequency, volts = self.peak()
+        # With nothing above the floor there is no peak to centre on, and
+        # zooming would just magnify a patch of silence.
+        if not frequency or not volts or volts <= DB_FLOOR:
+            return self.nyquist
+        wanted = max(frequency * harmonics, self.resolution * MIN_DISPLAY_BINS)
+        return min(self.nyquist, wanted)
 
 
 def spectrum(wave: Waveform, channel: int,

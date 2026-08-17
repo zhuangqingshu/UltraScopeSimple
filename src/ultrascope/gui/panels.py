@@ -523,6 +523,11 @@ class ViewPanel(Panel):
         self.channel = labelled_combo(self.spectrum_frame, "Channel",
                                       ("1", "2"), 1, on_change)
         self.channel.set("1")
+        # Nyquist comes from the timebase, not from the signal, so the default
+        # axis is usually far wider than anything worth looking at.
+        self.span = labelled_combo(self.spectrum_frame, "Span",
+                                   st.SPECTRUM_SPAN_LABELS, 2, on_change)
+        self.span.set(st.DEFAULT_SPECTRUM_SPAN)
 
         self.xy_frame = ttk.Frame(box)
         self.xy_frame.grid(row=2, column=0, columnspan=3, sticky="ew")
@@ -553,6 +558,9 @@ class ViewPanel(Panel):
     def channel_number(self) -> Optional[int]:
         text = self.channel.get()
         return int(text) if text.isdigit() else None
+
+    def spectrum_span(self):
+        return st.spectrum_span_for(self.span.get())
 
     def xy_channels(self):
         return (int(self.x_channel.get() or 1), int(self.y_channel.get() or 2))

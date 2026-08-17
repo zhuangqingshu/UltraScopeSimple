@@ -516,3 +516,65 @@ def test_xy_of_a_channel_against_itself_is_allowed():
     # perfectly good way to confirm the axes are what you think they are.
     x, y = xy_pairs(two_channel(), 1, 1)
     assert x is y
+
+
+# --- how much of the frequency axis is worth showing ------------------------
+
+from ultrascope.analysis import CYCLES_FOR_A_SHARP_PEAK  # noqa: E402
+
+
+def sine(frequency, npoints=600, timebase=1e-3):
+    t = time_axis(npoints, timebase, 0.0, DS1000E)
+    return Waveform(t=t, channels={1: np.sin(2 * np.pi * frequency * t)},
+                    timebase=timebase, time_offset=0.0)
+
+
+def test_the_span_covers_the_peak_and_its_harmonics():
+    # Nyquist follows from the timebase and says nothing about where the signal
+    # is: at 1 ms/div it is 25 kHz, so a 1 kHz tone occupies the leftmost 4%.
+    spec = spectrum(sine(1000.0), 1)
+    assert spec.nyquist > 20e3
+    assert spec.display_span() == pytest.approx(10e3, rel=0.2)
+
+
+def test_the_span_never_runs_past_nyquist():
+    # A high peak times ten would leave most of the axis showing nothing.
+    spec = spectrum(sine(20000.0), 1)
+    assert spec.display_span() <= spec.nyquist
+
+
+def test_a_very_low_peak_still_leaves_several_bins_in_view():
+    # Ten harmonics of a peak one bin up would be a handful of pixels wide.
+    spec = spectrum(sine(100.0, timebase=1e-3), 1)
+    assert spec.display_span() >= spec.resolution * 10
+
+
+def test_a_flat_trace_falls_back_to_the_whole_axis():
+    t = time_axis(600, 1e-3, 0.0, DS1000E)
+    flat = Waveform(t=t, channels={1: np.zeros(600)}, timebase=1e-3,
+                    time_offset=0.0)
+    spec = spectrum(flat, 1)
+    assert spec.display_span() == pytest.approx(spec.nyquist)
+
+
+def test_cycles_counts_periods_in_the_record():
+    # 1 kHz over 12 ms of record is twelve cycles, and equals peak over bin
+    # spacing because both are one over a time.
+    spec = spectrum(sine(1000.0, timebase=1e-3), 1)
+    assert spec.cycles() == pytest.approx(12.0, rel=0.1)
+
+
+def test_too_few_cycles_is_detectable():
+    # This is the real reason a 1 kHz square wave looks like a smudge at
+    # 200 us/div: 2.4 cycles in the record, so the fundamental falls between
+    # bins. Verified against the instrument -- it read 832 Hz for a signal the
+    # scope's own counter put at 998 Hz.
+    spec = spectrum(sine(1000.0, timebase=200e-6), 1)
+    assert spec.cycles() < CYCLES_FOR_A_SHARP_PEAK
+    assert spectrum(sine(1000.0, timebase=2e-3), 1).cycles() > CYCLES_FOR_A_SHARP_PEAK
+
+
+def test_enough_cycles_puts_the_peak_on_the_right_frequency():
+    frequency, volts = spectrum(sine(1000.0, timebase=2e-3), 1).peak()
+    assert frequency == pytest.approx(1000.0, rel=0.05)
+    assert volts == pytest.approx(1.0, rel=0.05)

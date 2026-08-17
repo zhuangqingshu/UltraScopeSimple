@@ -69,6 +69,21 @@ def condition_label_for(mode: str, reported: str, profile=None) -> str:
     return ""
 
 
+# Upper frequency for the spectrum view. None asks the analysis layer to pick
+# one from the signal; 0 means the whole axis out to Nyquist. Nyquist follows
+# from the timebase, so at a fast timebase an audio-frequency signal otherwise
+# sits in the leftmost few pixels of the plot.
+SPECTRUM_SPANS = (("Auto", None), ("Full", 0.0), ("1 kHz", 1e3),
+                  ("10 kHz", 1e4), ("100 kHz", 1e5), ("1 MHz", 1e6))
+SPECTRUM_SPAN_LABELS = tuple(label for label, _value in SPECTRUM_SPANS)
+DEFAULT_SPECTRUM_SPAN = "Auto"
+
+
+def spectrum_span_for(label: str):
+    """The frequency behind a span label, or None for Auto."""
+    return dict(SPECTRUM_SPANS).get(label or DEFAULT_SPECTRUM_SPAN)
+
+
 ACQ_TYPES = ("NORMAL", "AVERAGE", "PEAKDETECT")
 AVERAGE_COUNTS = ("2", "4", "8", "16", "32", "64", "128", "256")
 MEMORY_DEPTHS = ("NORMAL", "LONG")

@@ -126,6 +126,9 @@ class PlotCanvas:
         (self.spectrum_line,) = self.ax.plot([], [], color="#ff9d3a",
                                              linewidth=1.0, visible=False)
         self.spectrum_window = analysis.DEFAULT_WINDOW
+        # None = choose a span from the signal; 0 or less = the full axis out
+        # to Nyquist; anything else is a fixed upper frequency in Hz.
+        self.spectrum_span = None
 
         # XY view: one channel against the other, time implicit. Drawn on the
         # same axes for the same reason as the spectrum -- switching back is
@@ -466,18 +469,48 @@ class PlotCanvas:
         db = spec.db
         self.spectrum_line.set_data(spec.freqs, db)
         self.spectrum_line.set_visible(True)
-        self.ax.set_xlim(0.0, spec.freqs[-1])
-        top = float(np.max(db))
+
+        span = self._spectrum_limit(spec)
+        self.ax.set_xlim(0.0, span)
+        # Scale to the part on screen: a bin beyond the right edge setting the
+        # top would push the visible trace down out of the window.
+        shown = db[spec.freqs <= span]
+        top = float(np.max(shown)) if len(shown) else float(np.max(db))
         self.ax.set_ylim(top - SPECTRUM_DB_RANGE, top + SPECTRUM_DB_HEADROOM)
 
+        self.spectrum_readout.set(self._spectrum_text(channel, spec, span))
+        self.canvas.draw_idle()
+
+    def set_spectrum_span(self, span: Optional[float]) -> None:
+        """Limit the frequency axis. None means pick a span from the signal."""
+        self.spectrum_span = span
+
+    def _spectrum_limit(self, spec) -> float:
+        """The right-hand edge of the frequency axis."""
+        if self.spectrum_span is None:
+            return spec.display_span() or spec.nyquist
+        if self.spectrum_span <= 0:
+            return spec.nyquist
+        # A fixed span wider than the data has nothing to show beyond Nyquist.
+        return min(self.spectrum_span, spec.nyquist)
+
+    def _spectrum_text(self, channel: int, spec, span: float) -> str:
         frequency, volts = spec.peak()
         peak = ("--" if frequency is None
                 else f"{eng(frequency, 'Hz')} @ {eng(volts, 'V')}")
-        self.spectrum_readout.set(
-            f"CH{channel}  peak={peak}   window={spec.window}"
-            f"   res={eng(spec.resolution, 'Hz')}"
-            f"   fs={eng(spec.sample_rate, 'Sa/s')}")
-        self.canvas.draw_idle()
+        text = (f"CH{channel}  peak={peak}   window={spec.window}"
+                f"   res={eng(spec.resolution, 'Hz')}"
+                f"   span={eng(span, 'Hz')} of {eng(spec.nyquist, 'Hz')}"
+                f"   fs={eng(spec.sample_rate, 'Sa/s')}")
+
+        cycles = spec.cycles()
+        if cycles is not None and cycles < analysis.CYCLES_FOR_A_SHARP_PEAK:
+            # The usual reason a peak looks like a smear. The record holds too
+            # few cycles for a bin to land on the signal, and no amount of
+            # windowing fixes that -- only a slower timebase does.
+            text += (f"\nonly {cycles:.1f} cycles on screen: the peak is split "
+                     f"between bins and reads low. Slow the timebase down.")
+        return text
 
     # -------------------------------------------------------------- cursors
 

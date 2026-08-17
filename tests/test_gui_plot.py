@@ -553,3 +553,81 @@ def test_gestures_are_inert_in_the_xy_view(canvas):
 def test_an_unknown_view_is_rejected(canvas):
     with pytest.raises(ValueError, match="unknown domain"):
         canvas.set_domain("waterfall")
+
+
+# --- how much of the frequency axis is shown --------------------------------
+
+def tone(frequency=1000.0, npoints=600, timebase=1e-3):
+    t = time_axis(npoints, timebase, 0.0, DS1000E)
+    return Waveform(t=t, channels={1: np.sin(2 * np.pi * frequency * t)},
+                    timebase=timebase, time_offset=0.0)
+
+
+def test_the_span_defaults_to_the_signal_not_to_nyquist(canvas):
+    # The complaint this fixes: at a fast timebase Nyquist is hundreds of kHz
+    # and an audio-frequency signal is a smudge against the left edge.
+    wave = tone()
+    canvas.set_domain(SPECTRUM_DOMAIN)
+    canvas.show_spectrum(wave, 1)
+    spec = an.spectrum(wave, 1)
+    assert canvas.ax.get_xlim()[1] == pytest.approx(spec.display_span())
+    assert canvas.ax.get_xlim()[1] < spec.nyquist / 2
+
+
+def test_full_span_reaches_nyquist(canvas):
+    wave = tone()
+    canvas.set_spectrum_span(0.0)
+    canvas.set_domain(SPECTRUM_DOMAIN)
+    canvas.show_spectrum(wave, 1)
+    assert canvas.ax.get_xlim()[1] == pytest.approx(an.spectrum(wave, 1).nyquist)
+
+
+def test_a_fixed_span_is_honoured(canvas):
+    canvas.set_spectrum_span(5000.0)
+    canvas.set_domain(SPECTRUM_DOMAIN)
+    canvas.show_spectrum(tone(), 1)
+    assert canvas.ax.get_xlim()[1] == pytest.approx(5000.0)
+
+
+def test_a_fixed_span_beyond_nyquist_stops_at_nyquist(canvas):
+    # There is no data past Nyquist, so honouring 1 MHz literally would leave
+    # most of the plot empty.
+    wave = tone()
+    canvas.set_spectrum_span(1e6)
+    canvas.set_domain(SPECTRUM_DOMAIN)
+    canvas.show_spectrum(wave, 1)
+    assert canvas.ax.get_xlim()[1] == pytest.approx(an.spectrum(wave, 1).nyquist)
+
+
+def test_the_vertical_range_follows_what_is_on_screen(canvas):
+    # Scaling to a peak outside the span would push the visible trace off the
+    # bottom of the window.
+    t = time_axis(600, 1e-3, 0.0, DS1000E)
+    volts = np.sin(2 * np.pi * 500 * t) + 50.0 * np.sin(2 * np.pi * 20000 * t)
+    wave = Waveform(t=t, channels={1: volts}, timebase=1e-3, time_offset=0.0)
+
+    canvas.set_spectrum_span(2000.0)
+    canvas.set_domain(SPECTRUM_DOMAIN)
+    canvas.show_spectrum(wave, 1)
+    low, high = canvas.ax.get_ylim()
+    assert high < 20.0        # the 50 V component at 20 kHz is out of view
+
+
+def test_the_readout_warns_when_too_few_cycles_are_on_screen(canvas):
+    # 1 kHz at 200 us/div is 2.4 cycles: the peak straddles bins and reads low.
+    canvas.set_domain(SPECTRUM_DOMAIN)
+    canvas.show_spectrum(tone(timebase=200e-6), 1)
+    assert "cycles on screen" in canvas.spectrum_readout.get()
+    assert "timebase" in canvas.spectrum_readout.get()
+
+
+def test_no_warning_once_the_record_holds_enough_cycles(canvas):
+    canvas.set_domain(SPECTRUM_DOMAIN)
+    canvas.show_spectrum(tone(timebase=2e-3), 1)
+    assert "cycles on screen" not in canvas.spectrum_readout.get()
+
+
+def test_the_readout_says_how_much_of_the_axis_is_shown(canvas):
+    canvas.set_domain(SPECTRUM_DOMAIN)
+    canvas.show_spectrum(tone(), 1)
+    assert "span=" in canvas.spectrum_readout.get()
