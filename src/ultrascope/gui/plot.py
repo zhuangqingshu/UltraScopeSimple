@@ -505,11 +505,19 @@ class PlotCanvas:
 
         cycles = spec.cycles()
         if cycles is not None and cycles < analysis.CYCLES_FOR_A_SHARP_PEAK:
-            # The usual reason a peak looks like a smear. The record holds too
-            # few cycles for a bin to land on the signal, and no amount of
-            # windowing fixes that -- only a slower timebase does.
+            # The usual reason a peak looks like a smear: too few cycles for a
+            # bin to land on the signal, so it is split between two and reads
+            # low. No window fixes that -- only a slower timebase does.
+            #
+            # But not too much slower. Measured on a 1 kHz square wave: at
+            # 2 ms/div the 7th harmonic read 0.059 of the fundamental against
+            # the 1/n = 0.143 a square wave has, because the screen record is
+            # decimated and that attenuates the high end. At 500 us/div the
+            # same harmonics matched theory to a few percent.
             text += (f"\nonly {cycles:.1f} cycles on screen: the peak is split "
-                     f"between bins and reads low. Slow the timebase down.")
+                     f"between bins and reads low. A slower timebase sharpens "
+                     f"it -- but only so far, since that also decimates the "
+                     f"harmonics away.")
         return text
 
     # -------------------------------------------------------------- cursors
